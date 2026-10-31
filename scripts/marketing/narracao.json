@@ -1,0 +1,45 @@
+{
+  "voice": "pt-BR-ThalitaMultilingualNeural",
+  "cenas": ["abertura", "painel", "subagentes", "snapshot", "aprovacao", "gateway", "custo", "encerramento"],
+  "roteiros": {
+    "tiktok-instagram-9x16.mp4": {
+      "rate": "+4%",
+      "falas": [
+        "Ainda coordena agentes de IA na mão?",
+        "Olha só. Seu time de agentes, num painel só.",
+        "Você cria uma tarefa... e ela vira subagentes trabalhando em paralelo. Ao vivo!",
+        "Cada etapa vira um snapshot versionado do contexto.",
+        "E nada vai pro merge sem a sua aprovação.",
+        "Um modelo caiu? Tranquilo. O gateway faz o fallback.",
+        "No fim, você vê o custo por modelo, agente e tarefa. E exporta em CSV.",
+        "É o JP Orchestrator. Código aberto. O link tá na tela!"
+      ]
+    },
+    "linkedin-1x1.mp4": {
+      "rate": "+0%",
+      "falas": [
+        "Orquestrar agentes de código, com o custo sob controle.",
+        "O JP Orchestrator reúne o seu time de agentes em um único painel.",
+        "Uma tarefa se divide em subagentes, que trabalham em paralelo. E você acompanha tudo, ao vivo.",
+        "Cada etapa vira um snapshot versionado do contexto. Fácil de auditar.",
+        "Antes do merge, a decisão é sempre humana.",
+        "Se um modelo cai, o gateway faz o fallback, sozinho.",
+        "E o custo aparece por modelo, por agente e por tarefa, com exportação em CSV.",
+        "JP Orchestrator. Código aberto, licença MIT. Vale conhecer."
+      ]
+    },
+    "linkedin-16x9.mp4": {
+      "rate": "+0%",
+      "falas": [
+        "E se o seu time de agentes de código tivesse um maestro?",
+        "Com o JP Orchestrator, tudo fica em um painel só.",
+        "Você descreve a tarefa, e ela se divide em subagentes, rodando em paralelo. Ao vivo.",
+        "A cada etapa, um snapshot versionado do contexto.",
+        "E o merge só acontece com aprovação humana.",
+        "Caiu um modelo? O gateway faz o fallback, sem parar o fluxo.",
+        "No final, o custo por modelo, agente e tarefa. Com export em CSV.",
+        "JP Orchestrator. Código aberto, licença MIT. O link está na tela."
+      ]
+    }
+  }
+}

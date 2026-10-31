@@ -2,6 +2,14 @@
 
 Formato baseado em Keep a Changelog. Versionamento semântico.
 
+## [0.3.1] - 2026-10-31
+
+### Adicionado
+- Versões narradas em português do Brasil dos 3 vídeos de marketing (`*-narrado.mp4`), com a voz neural
+  `pt-BR-ThalitaMultilingualNeural` (edge-tts 7.2.3) e um roteiro por formato em `scripts/marketing/narracao.json`.
+- `build-videos.mjs --narrar`: gera a fala de cada cena e estende a cena congelando o último quadro quando a fala
+  é mais longa que a gravação, sem corte seco. Áudio normalizado em -16 LUFS.
+
 ## [0.3.0] - 2026-10-31
 
 ### Alterado

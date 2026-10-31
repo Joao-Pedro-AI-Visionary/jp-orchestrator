@@ -1,13 +1,17 @@
 // Monta os vídeos de marketing a partir das gravações reais de record.mjs.
 // Uso: node scripts/marketing/build-videos.mjs [pasta-das-gravacoes] [pasta-de-saida]
 // O ffmpeg do Homebrew não traz drawtext/libass, então legendas e cartões viram PNG (Playwright) + overlay.
+// --narrar: gera a fala de cada cena (edge-tts, roteiro em narracao.json) e grava <nome>-narrado.mp4.
+// Cena mais curta que a fala ganha tempo congelando o último quadro (tpad), sem corte seco.
 import { chromium } from '@playwright/test';
 import { spawnSync } from 'node:child_process';
 import { mkdirSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 
-const src = resolve(process.argv[2] ?? 'reports/marketing');
-const out = resolve(process.argv[3] ?? 'docs/marketing');
+const NARRAR = process.argv.includes('--narrar');
+const [srcArg, outArg] = process.argv.slice(2).filter((a) => !a.startsWith('--'));
+const src = resolve(srcArg ?? 'reports/marketing');
+const out = resolve(outArg ?? 'docs/marketing');
 const tmp = join(src, 'overlays');
 mkdirSync(tmp, { recursive: true });
 mkdirSync(out, { recursive: true });
@@ -111,12 +115,34 @@ async function renderPngs(browser, f) {
   return r;
 }
 
-function build(f, png) {
+// Narração: um mp3 por cena. LEAD = respiro antes da fala, GAP = respiro depois.
+const LEAD = 0.15;
+const GAP = 0.45;
+const probe = (p) =>
+  Number(spawnSync('ffprobe', ['-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', p]).stdout.toString());
+function narrate(f) {
+  const cfg = JSON.parse(readFileSync(resolve('scripts/marketing/narracao.json'), 'utf8'));
+  const r = cfg.roteiros[f.file];
+  const dir = join(src, 'narr', f.file.replace('.mp4', ''));
+  mkdirSync(dir, { recursive: true });
+  return r.falas.map((text, i) => {
+    const path = join(dir, `${i}-${cfg.cenas[i]}.mp3`);
+    const res = spawnSync('edge-tts', ['-v', cfg.voice, `--rate=${r.rate}`, '-t', text, '--write-media', path]);
+    if (res.status !== 0) throw new Error(`edge-tts falhou na cena ${i}: ${res.stderr}`);
+    return { path, dur: probe(path) };
+  });
+}
+
+function build(f, png, voz) {
   const m = JSON.parse(readFileSync(join(src, `${f.source}.markers.json`), 'utf8'));
+  const n = SEGMENTS.length;
+  // tempo mínimo de tela que cada cena precisa para a fala caber inteira
+  const intro = voz ? Math.max(INTRO, LEAD + voz[0].dur + GAP + XF) : INTRO;
+  const outro = voz ? Math.max(OUTRO, XF + LEAD + voz[n + 1].dur + 0.8) : OUTRO;
   const inputs = ['-i', join(src, `${f.source}.webm`)];
   const still = (p, t) => inputs.push('-loop', '1', '-framerate', String(FPS), '-t', String(t), '-i', p);
-  still(png.intro, INTRO); // 1
-  still(png.outro, OUTRO); // 2
+  still(png.intro, intro); // 1
+  still(png.outro, outro); // 2
   png.captions.forEach((p) => still(p, 1)); // 3..
   const capBase = 3;
   let frameIdx = -1;
@@ -133,8 +159,12 @@ function build(f, png) {
   SEGMENTS.forEach(([a, b, pad, speed], i) => {
     const start = m[a];
     const end = Math.min(m[b] + pad, m.end);
-    const dur = (end - start) / speed;
-    parts.push(`[0:v]trim=start=${start.toFixed(3)}:end=${end.toFixed(3)},setpts=(PTS-STARTPTS)/${speed}[s${i}]`);
+    const base = (end - start) / speed;
+    const need = voz ? (i === 0 ? XF : 0) + LEAD + voz[i + 1].dur + GAP + (i === n - 1 ? XF : 0) : 0;
+    const hold = Math.max(0, need - base);
+    const dur = base + hold;
+    const freeze = hold > 0 ? `,tpad=stop_mode=clone:stop_duration=${hold.toFixed(3)}` : '';
+    parts.push(`[0:v]trim=start=${start.toFixed(3)}:end=${end.toFixed(3)},setpts=(PTS-STARTPTS)/${speed}${freeze}[s${i}]`);
     labels.push(`[s${i}]`);
     windows.push([t, t + dur]);
     t += dur;
@@ -161,24 +191,42 @@ function build(f, png) {
   });
   parts.push(`[${cur}]trim=duration=${contentDur.toFixed(3)},${norm}[content]`);
   parts.push(`[1:v]${norm}[intro]`, `[2:v]${norm}[outro]`);
-  parts.push(`[intro][content]xfade=transition=fade:duration=${XF}:offset=${(INTRO - XF).toFixed(3)}[x1]`);
-  parts.push(`[x1][outro]xfade=transition=fade:duration=${XF}:offset=${(INTRO + contentDur - 2 * XF).toFixed(3)}[v]`);
+  parts.push(`[intro][content]xfade=transition=fade:duration=${XF}:offset=${(intro - XF).toFixed(3)}[x1]`);
+  parts.push(`[x1][outro]xfade=transition=fade:duration=${XF}:offset=${(intro + contentDur - 2 * XF).toFixed(3)}[v]`);
 
-  const total = INTRO + contentDur + OUTRO - 2 * XF;
+  const total = intro + contentDur + outro - 2 * XF;
+  const nIn = inputs.filter((x) => x === '-i').length;
+  let audio = `${nIn}:a`;
+  if (voz) {
+    // início de cada fala na linha do tempo final: abertura, cenas do conteúdo, encerramento
+    const at = [LEAD, ...windows.map(([a], i) => intro - XF + a + (i === 0 ? XF : 0) + LEAD), intro + contentDur - 2 * XF + XF + LEAD];
+    voz.forEach((v, i) => {
+      const ms = Math.round(at[i] * 1000);
+      parts.push(`[${nIn + 1 + i}:a]aresample=48000,aformat=channel_layouts=stereo,adelay=${ms}|${ms}[a${i}]`);
+    });
+    const cfg = JSON.parse(readFileSync(resolve('scripts/marketing/narracao.json'), 'utf8'));
+    const ends = [intro, ...windows.map(([, b]) => intro - XF + b), intro + contentDur - 2 * XF + outro];
+    const starts = [0, ...windows.map(([a]) => intro - XF + a), intro + contentDur - 2 * XF];
+    voz.forEach((v, i) => console.log(`  ${cfg.cenas[i].padEnd(12)} cena ${starts[i].toFixed(2)}-${ends[i].toFixed(2)}s  fala ${at[i].toFixed(2)}-${(at[i] + v.dur).toFixed(2)}s`));
+    parts.push(`[${nIn}:a]${voz.map((_, i) => `[a${i}]`).join('')}amix=inputs=${voz.length + 1}:normalize=0:duration=first,loudnorm=I=-16:TP=-1.5:LRA=11,aresample=48000[aout]`);
+    audio = '[aout]';
+  }
+  const file = voz ? f.file.replace('.mp4', '-narrado.mp4') : f.file;
   const args = [
     '-y', '-v', 'error', ...inputs,
     '-f', 'lavfi', '-t', total.toFixed(3), '-i', 'anullsrc=channel_layout=stereo:sample_rate=48000',
+    ...(voz ? voz.flatMap((v) => ['-i', v.path]) : []),
     '-filter_complex', parts.join(';'),
-    '-map', '[v]', '-map', `${inputs.filter((x) => x === '-i').length}:a`,
+    '-map', '[v]', '-map', audio,
     '-c:v', 'libx264', '-preset', 'slow', '-crf', '20', '-pix_fmt', 'yuv420p', '-r', String(FPS),
-    '-c:a', 'aac', '-b:a', '96k', '-shortest', '-movflags', '+faststart',
-    join(out, f.file),
+    '-c:a', 'aac', '-b:a', voz ? '160k' : '96k', '-shortest', '-movflags', '+faststart',
+    join(out, file),
   ];
   const res = spawnSync('ffmpeg', args, { stdio: 'inherit' });
-  if (res.status !== 0) throw new Error(`ffmpeg falhou em ${f.file}`);
-  console.log(`${f.file}: ${total.toFixed(1)}s`);
+  if (res.status !== 0) throw new Error(`ffmpeg falhou em ${file}`);
+  console.log(`${file}: ${total.toFixed(1)}s`);
 }
 
 const browser = await chromium.launch();
-for (const f of FORMATS) build(f, await renderPngs(browser, f));
+for (const f of FORMATS) build(f, await renderPngs(browser, f), NARRAR ? narrate(f) : null);
 await browser.close();
