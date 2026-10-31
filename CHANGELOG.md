@@ -2,6 +2,33 @@
 
 Formato baseado em Keep a Changelog. Versionamento semântico.
 
+## [0.3.2] - 2026-10-31
+
+### Corrigido
+- Receptor de webhooks (`POST /webhooks/inbox`) idempotente: deduplica por `X-JP-Event-Id` (`webhook_inbox.event_id`
+  `UNIQUE` + `ON CONFLICT DO NOTHING`) e responde 200 com `duplicate: true` na reentrega. Antes, cada reenvio do
+  relay at-least-once virava uma linha nova.
+- `ToolInvoker` executava o handler antes de persistir qualquer coisa: um crash entre o efeito e o commit perdia o
+  registro e a nova tentativa executava sem nenhuma chave em comum. Agora grava `started` com lease antes de executar,
+  reconcilia na nova tentativa (espera o lease vencer, no máximo um lease, e reexecuta com a mesma chave) e conclui
+  com fencing pela tentativa. O handler tem o lease como timeout.
+
+### Adicionado
+- Header `Idempotency-Key` (= id do evento) em toda entrega do `OutboxRelay`, igual em todas as reentregas.
+- `ToolHandler.execute(args, ctx)` com `ctx.idempotencyKey` e `ctx.attempt`; `ToolCallInProgressError` quando outro
+  worker mantém o lease por mais de um lease. Variável `TOOL_LEASE_MS` (padrão 10000, abaixo de `SUBAGENT_TIMEOUT_MS`).
+- Migrações SQL versionadas (`api/src/persistence/migrations/`, tabela `schema_migrations`):
+  `0001_webhook_inbox_event_id.sql` e `0002_tool_calls_started_lease.sql`. Linhas antigas de `tool_calls` viram `completed`
+  e o default de `status` continua `completed`, para uma instância v0.3.1 em deploy gradual gravar linhas válidas.
+  Eventos recebidos antes da migração ficam com `event_id` nulo e não são deduplicados.
+- Seção "Garantias de entrega" / "Delivery guarantees" no README.
+
+### Testes
+- Testes de crash (morte do processo entre efeito e marca/commit) no relay e no invoker, e testes do receptor idempotente.
+- `pg.store.spec.ts`: SQL do `PgStore` e migrações num Postgres real em WASM (`@electric-sql/pglite` 0.5.14, devDependency
+  pinada). O PGlite usa `import()` dinâmico, por isso `npm test` da API roda o Jest com `--experimental-vm-modules`.
+  É uma conexão só: valida a semântica do SQL, não a concorrência entre conexões.
+
 ## [0.3.1] - 2026-10-31
 
 ### Adicionado

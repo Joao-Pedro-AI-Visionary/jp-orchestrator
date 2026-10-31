@@ -101,6 +101,28 @@ testers em paralelo, depois o revisor.
 - Budget guard por tarefa: a chamada que cruzaria o orçamento é bloqueada e a tarefa vai para `budget_exceeded`.
 - Embedding local (hash de palavras e bigramas): a consulta ao cache não chama modelo.
 
+### Garantias de entrega
+
+- **Webhooks (outbox → receptor): at-least-once + dedupe no receptor.** O evento nasce na mesma transação do
+  estado que o gerou. O `OutboxRelay` reivindica o evento com um lease de 30 s (`FOR UPDATE SKIP LOCKED`) e só
+  marca `delivered` depois do 2xx. Se o processo morrer entre o 2xx e essa marca, ou a entrega passar de 30 s, o
+  evento é reenviado. Todo envio do mesmo evento leva os mesmos `X-JP-Event-Id` e `Idempotency-Key` (= id do
+  evento), com assinatura nova. O receptor deduplica por esse id: `webhook_inbox.event_id` é `UNIQUE` e o insert
+  usa `ON CONFLICT DO NOTHING`; a repetição responde 200 com `duplicate: true`. Só deduplica evento com assinatura
+  válida e cujo header bate com o `id` assinado no corpo, para uma requisição forjada não "ocupar" o id de um evento real.
+- **Ferramentas (`ToolInvoker`): no máximo um resultado por `Idempotency-Key`; efeito externo idempotente pela chave.**
+  Antes de executar, grava a linha `started` com lease (`TOOL_LEASE_MS`, padrão 10 s, menor que o timeout de 30 s do
+  subagente). O handler recebe `ctx.idempotencyKey` (estável entre tentativas) e `ctx.attempt`, e tem o lease como
+  timeout. Resultado e evento `tool.executed` são gravados na mesma transação, protegidos pelo número da tentativa
+  (fencing). Se o processo morrer entre o efeito e o commit, a nova tentativa (inclusive a retomada no boot) espera o
+  lease vencer, no máximo um lease, e reconcilia rodando o handler de novo com a mesma chave. Por isso, ferramenta com
+  efeito externo **precisa** repassar `ctx.idempotencyKey` ao sistema de destino: o handler pode rodar mais de uma vez,
+  e é o destino que aplica o efeito uma vez só. Sem isso não existe exactly-once.
+- Os testes com `crash` no nome simulam a morte do processo nesses dois pontos (`outbox-relay.spec.ts`, `tool-invoker.spec.ts`).
+- Migrações SQL em `api/src/persistence/migrations/`, aplicadas no boot uma vez cada (tabela `schema_migrations`).
+  O SQL do `PgStore` e as migrações são testados num Postgres real em WASM (PGlite) em `pg.store.spec.ts`.
+- Eventos gravados no inbox antes da v0.3.2 não têm `event_id`, então uma reentrega deles não é deduplicada.
+
 ### Como rodar
 
 Pré-requisitos: Docker com Compose, Node 22.
@@ -174,6 +196,23 @@ memory and the task context is versioned as hash-chained snapshots. A Next.js da
 live over SSE.
 
 This version ships a deterministic `MockProvider`; real providers plug in as another `LlmProvider` strategy.
+
+### Delivery guarantees
+
+- **Webhooks (outbox → receiver): at-least-once delivery + receiver dedupe.** Events are written in the same
+  transaction as the state change. The relay claims an event with a 30s lease and marks it `delivered` only after a
+  2xx, so a crash between the 2xx and the mark (or a delivery slower than the lease) resends it. Every send of one
+  event carries the same `X-JP-Event-Id` and `Idempotency-Key` (the event id). Receivers must dedupe on it; the demo
+  receiver does so with a `UNIQUE` `webhook_inbox.event_id` and `ON CONFLICT DO NOTHING`, answering 200 with
+  `duplicate: true` on a replay (only for verified events whose header matches the signed body id).
+- **Tool calls: one stored result per `Idempotency-Key`; external effects idempotent on that key.** A `started` row
+  with a lease (`TOOL_LEASE_MS`, default 10s, below the 30s subagent timeout) is persisted before the handler runs;
+  handlers get `ctx.idempotencyKey` and `ctx.attempt` and are bounded by the lease; the result and its outbox event
+  commit together, fenced by the attempt. After a crash between the effect and the commit, the retry (including the
+  boot resume) waits up to one lease, then re-runs the handler with the same key. The handler may run more than
+  once, so tools with external side effects must forward `ctx.idempotencyKey` and let the downstream apply it once.
+- Tests with `crash` in their name kill the process at both points; they assert the same ids/key are reused and
+  that a receiver or downstream honoring the key applies the effect once.
 
 ### Run it
 

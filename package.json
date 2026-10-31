@@ -1,6 +1,6 @@
 {
   "name": "jp-orchestrator",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "private": true,
   "description": "Orquestrador de agentes de código com AI Gateway, execução durável, memória compartilhada e contexto versionado.",
   "license": "MIT",
