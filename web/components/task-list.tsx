@@ -5,7 +5,7 @@ import { AnimatePresence, motion } from "motion/react";
 import type { Dashboard } from "@/lib/use-dashboard";
 import { RUNNING_STATUSES, TASK_STATUS } from "@/lib/status";
 import { usd } from "@/lib/format";
-import { EmptyState, ErrorNote, Pill, ProgressBar, Skeleton } from "./ui";
+import { EmptyState, ErrorNote, Pill, ProgressBar, SectionTitle, Skeleton } from "./ui";
 
 type Filter = "all" | "running" | "approval" | "done";
 const FILTERS: { id: Filter; label: string; testId: string }[] = [
@@ -26,9 +26,11 @@ export function TaskList({ d }: { d: Dashboard }) {
 
   return (
     <section aria-labelledby="tasks-title" className="card p-5" data-testid="task-list">
-      <h2 id="tasks-title" className="font-heading text-xl font-bold text-white">
-        Tarefas
-      </h2>
+      <SectionTitle id="tasks-title" eyebrow="Fila" title="Tarefas">
+        <span className="text-xs tabular-nums text-slate-400" data-testid="tasks-count">
+          {visible.length} de {d.tasks.length}
+        </span>
+      </SectionTitle>
       <div role="group" aria-label="Filtrar tarefas" className="mt-3 flex flex-wrap gap-2">
         {FILTERS.map((f) => (
           <button
@@ -53,7 +55,7 @@ export function TaskList({ d }: { d: Dashboard }) {
         ) : visible.length === 0 && !d.errors.tasks ? (
           <EmptyState testId="tasks-empty" text={d.tasks.length === 0 ? "Nenhuma tarefa ainda. Crie a primeira acima." : "Nenhuma tarefa neste filtro."} />
         ) : (
-          <ul className="space-y-3">
+          <ul className="scroll-area max-h-[560px] space-y-3" aria-label="Lista de tarefas">
             <AnimatePresence initial={false}>
               {visible.map((t) => {
                 const tone = TASK_STATUS[t.status];

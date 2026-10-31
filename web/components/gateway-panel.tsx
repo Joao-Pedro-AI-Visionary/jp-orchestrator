@@ -20,7 +20,8 @@ export function GatewayPanel({ d }: { d: Dashboard }) {
   ];
   return (
     <section aria-labelledby="gw-title" className="card p-5" data-testid="gateway-panel">
-      <h2 id="gw-title" className="font-heading text-xl font-bold text-white">
+      <p className="eyebrow">Roteamento</p>
+      <h2 id="gw-title" className="mt-1 font-heading text-xl font-bold text-white">
         AI Gateway
       </h2>
 

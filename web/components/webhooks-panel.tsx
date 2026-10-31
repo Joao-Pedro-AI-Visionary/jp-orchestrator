@@ -4,14 +4,14 @@ import { AnimatePresence, motion } from "motion/react";
 import { ShieldAlert, ShieldCheck } from "lucide-react";
 import type { Dashboard } from "@/lib/use-dashboard";
 import { time } from "@/lib/format";
-import { EmptyState, ErrorNote, Skeleton } from "./ui";
+import { EmptyState, ErrorNote, SectionTitle, Skeleton } from "./ui";
 
 export function WebhooksPanel({ d }: { d: Dashboard }) {
   return (
     <section aria-labelledby="wh-title" className="card p-5" data-testid="webhooks-panel">
-      <h2 id="wh-title" className="font-heading text-xl font-bold text-white">
-        Webhooks recebidos
-      </h2>
+      <SectionTitle id="wh-title" eyebrow="Eventos" title="Webhooks recebidos">
+        <span className="text-xs tabular-nums text-slate-400">{d.webhooks.length} recebidos</span>
+      </SectionTitle>
       <p className="mt-1 text-sm text-slate-400">Eventos assinados com HMAC e verificados no recebimento.</p>
       <div className="mt-4">
         {d.errors.webhooks && <ErrorNote text={d.errors.webhooks} onRetry={d.reloadAll} />}
@@ -23,7 +23,7 @@ export function WebhooksPanel({ d }: { d: Dashboard }) {
         ) : d.webhooks.length === 0 && !d.errors.webhooks ? (
           <EmptyState testId="webhooks-empty" text="Nenhum webhook recebido ainda. Conclua uma tarefa para gerar o primeiro." />
         ) : (
-          <ul className="space-y-2" data-testid="webhooks-list">
+          <ul className="scroll-area max-h-[420px] space-y-2" data-testid="webhooks-list">
             <AnimatePresence initial={false}>
               {d.webhooks.map((w) => (
                 <motion.li
@@ -46,7 +46,7 @@ export function WebhooksPanel({ d }: { d: Dashboard }) {
                     </span>
                   </div>
                   <p className="mt-1 truncate text-xs text-slate-400">
-                    <code>{w.signature}</code> · {time(w.receivedAt)}
+                    <code className="font-mono">{w.signature}</code> · {time(w.receivedAt)}
                   </p>
                 </motion.li>
               ))}

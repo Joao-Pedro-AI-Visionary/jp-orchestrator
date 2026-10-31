@@ -2,6 +2,25 @@
 
 Formato baseado em Keep a Changelog. Versionamento semântico.
 
+## [0.2.0] - 2026-10-31
+
+### Alterado
+- UI refinada a partir de shots populares do Dribbble para dashboards de agentes de IA e dev tools
+  (AI Agent Analytics, AI Voice Agent Dashboard, OPERATE, Montseract): topbar fixa translúcida,
+  rótulos de seção (eyebrow), KPIs com faixa de destaque, fundo pontilhado sutil.
+- Listas longas (tarefas, webhooks, faturamento por tarefa) rolam dentro do próprio card, com cabeçalho
+  fixo na tabela: a página desktop caiu de ~7.900 px para ~4.100 px de altura.
+- Botão de erro passou a "Tentar de novo", com ícone e `data-testid="retry-button"`.
+
+### Corrigido
+- Rolagem horizontal no celular: colunas do grid sem `min-w-0` se alargavam pelo conteúdo do AI Gateway
+  (723 px num viewport de 540 px).
+
+### Adicionado
+- E2E do botão "Tentar de novo" (falha de rede simulada na primeira leitura de `/tasks`, recuperação na API real).
+- E2E de regressão: sem rolagem horizontal no celular.
+- Vídeos de marketing 9:16, 1:1 e 16:9 em `docs/marketing/`, gravados na stack real, e os scripts que os geram.
+
 ## [0.1.0] - 2026-10-31
 
 ### Adicionado

@@ -53,7 +53,8 @@ export const NewTaskForm = forwardRef<HTMLInputElement, { d: Dashboard }>(functi
 
   return (
     <section id="nova-tarefa" aria-labelledby="form-title" className="card p-5" data-testid="new-task-section">
-      <h2 id="form-title" className="font-heading text-xl font-bold text-white">
+      <p className="eyebrow">Criar</p>
+      <h2 id="form-title" className="mt-1 font-heading text-xl font-bold text-white">
         Nova tarefa
       </h2>
       <p className="mt-1 text-sm text-slate-400">Comece por um modelo pronto ou descreva do zero.</p>

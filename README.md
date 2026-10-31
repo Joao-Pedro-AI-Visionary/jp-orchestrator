@@ -124,6 +124,19 @@ npx playwright install chromium && npm run e2e   # e2e contra o stack rodando
 Sem `DATABASE_URL` e `REDIS_URL` a API roda inteira em memória. Variáveis em `.env.example`.
 Contrato da API em `docs/api-contract.md`. Screenshots do e2e em `docs/screenshots/`.
 
+### Vídeos de demonstração
+
+Gravados com Playwright sobre a stack real (`docker compose up`), sem mocks, e montados com ffmpeg:
+`docs/marketing/tiktok-instagram-9x16.mp4`, `docs/marketing/linkedin-1x1.mp4` e `docs/marketing/linkedin-16x9.mp4`.
+
+```bash
+node scripts/marketing/record.mjs desktop reports/marketing   # 1600x900, com marcadores de tempo
+node scripts/marketing/record.mjs mobile reports/marketing    # 720x1280
+node scripts/marketing/build-videos.mjs reports/marketing docs/marketing
+```
+
+O ffmpeg do Homebrew não tem `drawtext` nem `libass`: legendas e cartões da marca são PNG renderizados pelo Playwright e aplicados com `overlay`.
+
 ### Inspiração
 
 O desenho de portões, loops limitados e "teste verde manda" é inspirado conceitualmente no
@@ -157,6 +170,9 @@ npm run e2e                    # Playwright e2e against the running stack
 ```
 
 See the pattern table and the loop table above for where each pattern lives in the code.
+
+Demo videos (recorded with Playwright on the real stack, edited with ffmpeg) live in `docs/marketing/`;
+`scripts/marketing/record.mjs` and `scripts/marketing/build-videos.mjs` rebuild them.
 
 ### License
 

@@ -43,9 +43,12 @@ export function BillingPanel({ d }: { d: Dashboard }) {
   return (
     <section aria-labelledby="bill-title" className="card p-5" data-testid="billing-panel">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <h2 id="bill-title" className="font-heading text-xl font-bold text-white">
-          Faturamento
-        </h2>
+        <div>
+          <p className="eyebrow">Custos</p>
+          <h2 id="bill-title" className="mt-1 font-heading text-xl font-bold text-white">
+            Faturamento
+          </h2>
+        </div>
         <a href={CSV_URL} download data-testid="export-csv" className="btn" aria-label="Exportar relatório de faturamento em CSV">
           <Download className="size-4" aria-hidden="true" />
           Exportar CSV
@@ -73,10 +76,10 @@ export function BillingPanel({ d }: { d: Dashboard }) {
                 <EmptyState testId="billing-tasks-empty" text="Nenhuma tarefa faturada ainda." />
               </div>
             ) : (
-              <div className="mt-2 overflow-x-auto">
+              <div className="scroll-area mt-2 max-h-[420px] overflow-x-auto">
                 <table className="w-full text-left text-sm" data-testid="billing-task-table">
                   <caption className="sr-only">Custo por tarefa</caption>
-                  <thead className="text-xs text-slate-400">
+                  <thead className="sticky top-0 bg-[#0d0f1a] text-xs text-slate-400">
                     <tr>
                       <th scope="col" className="py-2 pr-3">Tarefa</th>
                       <th scope="col" className="py-2 pr-3">Status</th>

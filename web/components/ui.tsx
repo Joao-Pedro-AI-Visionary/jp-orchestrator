@@ -2,7 +2,7 @@
 
 import { animate, useReducedMotion } from "motion/react";
 import { useEffect, useRef, useState } from "react";
-import { AlertTriangle, Inbox } from "lucide-react";
+import { AlertTriangle, Inbox, RotateCcw } from "lucide-react";
 
 export function Skeleton({ className = "" }: { className?: string }) {
   return <div aria-hidden="true" className={`skeleton ${className}`} />;
@@ -41,8 +41,9 @@ export function ErrorNote({ text, onRetry, testId }: { text: string; onRetry?: (
       <AlertTriangle className="size-4 shrink-0" aria-hidden="true" />
       <span className="flex-1">{text}</span>
       {onRetry && (
-        <button type="button" className="btn" onClick={onRetry}>
-          Tentar novamente
+        <button type="button" className="btn" onClick={onRetry} data-testid="retry-button">
+          <RotateCcw className="size-4" aria-hidden="true" />
+          Tentar de novo
         </button>
       )}
     </div>
@@ -91,6 +92,20 @@ export function ProgressBar({ ratio, tone = "bg-indigo-400", label }: { ratio: n
       className="h-2 w-full overflow-hidden rounded-full bg-white/10"
     >
       <div className={`h-full rounded-full transition-[width] duration-500 ${tone}`} style={{ width: `${pct}%` }} />
+    </div>
+  );
+}
+
+export function SectionTitle({ id, eyebrow, title, children }: { id: string; eyebrow: string; title: string; children?: React.ReactNode }) {
+  return (
+    <div className="flex flex-wrap items-end justify-between gap-3">
+      <div>
+        <p className="eyebrow">{eyebrow}</p>
+        <h2 id={id} className="mt-1 font-heading text-xl font-bold text-white">
+          {title}
+        </h2>
+      </div>
+      {children}
     </div>
   );
 }

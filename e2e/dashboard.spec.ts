@@ -188,6 +188,28 @@ test('fluxo completo do dashboard: todos os botões executam ações reais', asy
   await expect(close).toHaveCount(0);
 });
 
+test('botão "Tentar de novo" recupera a lista após falha de rede', async ({ page }) => {
+  // Falha só a primeira leitura de /tasks no navegador; o clique em "Tentar de novo" volta à API real.
+  let failed = 0;
+  await page.route(`${API}/tasks`, (route) => {
+    if (route.request().method() === 'GET' && failed === 0) {
+      failed++;
+      return route.abort('connectionrefused');
+    }
+    return route.continue();
+  });
+  await page.goto('/');
+  const error = page.getByTestId('tasks-error');
+  await expect(error).toBeVisible();
+  await page.screenshot({ path: `${SHOTS}/08-erro-tentar-de-novo.png` });
+  await error.getByTestId('retry-button').click();
+  await expect(error).toBeHidden();
+  const total = (await api<unknown[]>('/tasks')).length;
+  if (total > 0) await expect(page.getByTestId('task-card').first()).toBeVisible();
+  else await expect(page.getByTestId('tasks-empty')).toBeVisible();
+  expect(failed).toBe(1);
+});
+
 test('Idempotency-Key no POST /tasks devolve a mesma tarefa', async () => {
   const body = JSON.stringify({ title: `Idempotente ${stamp()}`, description: 'Implementar algo' });
   const headers = { 'content-type': 'application/json', 'Idempotency-Key': `e2e-${stamp()}` };
@@ -206,6 +228,13 @@ test('acessibilidade básica: landmarks, região aria-live e movimento reduzido'
   await expect(page.locator('main')).toHaveCount(1);
   await expect(page.locator('header').first()).toBeVisible();
   await expect(page.getByTestId('live-region')).toHaveAttribute('aria-live', /polite|assertive/);
+  // regressão: colunas do grid sem min-w-0 alargavam a página no celular
+  await expect(page.getByTestId('model-item').first()).toBeVisible();
+  const { scroll, client } = await page.evaluate(() => ({
+    scroll: document.documentElement.scrollWidth,
+    client: document.documentElement.clientWidth,
+  }));
+  expect(scroll, 'sem rolagem horizontal no celular').toBeLessThanOrEqual(client);
   await page.screenshot({ path: `${SHOTS}/07-mobile-reduced-motion.png`, fullPage: true });
   await ctx.close();
 });

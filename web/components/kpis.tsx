@@ -17,12 +17,12 @@ export function Kpis({ d }: { d: Dashboard }) {
   return (
     <section aria-label="Indicadores" data-testid="kpi-row" className="grid grid-cols-2 gap-4 lg:grid-cols-5">
       {items.map((k) => (
-        <div key={k.id} className="card p-4" style={{ ["--glow" as string]: k.glow }}>
-          <div className="flex items-center gap-2 text-sm text-slate-300">
-            <k.icon className="size-4" aria-hidden="true" />
+        <div key={k.id} className="card kpi-accent p-4" style={{ ["--glow" as string]: k.glow, ["--accent" as string]: k.glow.replace(/0\.\d+\)$/, "1)") }}>
+          <div className="eyebrow flex items-center gap-2">
+            <k.icon className="size-4 text-slate-300" aria-hidden="true" />
             {k.label}
           </div>
-          <p className="mt-3 font-heading text-2xl font-bold text-white sm:text-3xl">
+          <p className="mt-3 font-heading text-2xl font-bold tracking-tight text-white sm:text-3xl">
             {k.ready ? <AnimatedNumber value={k.value} format={k.fmt} testId={k.id} /> : <Skeleton className="h-9 w-24" />}
           </p>
         </div>
