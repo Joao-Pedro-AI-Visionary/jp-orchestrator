@@ -18,7 +18,7 @@ export function Toasts({ d }: { d: Dashboard }) {
             role={t.kind === "error" ? "alert" : "status"}
             data-testid={t.kind === "error" ? "toast-error" : "toast-success"}
             className={`flex items-start gap-3 rounded-2xl border px-4 py-3 text-sm shadow-xl backdrop-blur ${
-              t.kind === "error" ? "border-rose-400/40 bg-rose-950/90 text-rose-100" : "border-emerald-400/40 bg-emerald-950/90 text-emerald-100"
+              t.kind === "error" ? "border-bad/40 bg-[#1f0f0f]/95 text-bad" : "border-ok/40 bg-[#0f1a13]/95 text-ok"
             }`}
           >
             {t.kind === "error" ? <XCircle className="mt-0.5 size-4 shrink-0" aria-hidden="true" /> : <CheckCircle2 className="mt-0.5 size-4 shrink-0" aria-hidden="true" />}

@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="docs/jpdev-logo.png" alt="Logo JpDev" height="160">
+
 # JP Orchestrator
 
 **por JpDev**
@@ -137,6 +139,20 @@ node scripts/marketing/build-videos.mjs reports/marketing docs/marketing
 
 O ffmpeg do Homebrew não tem `drawtext` nem `libass`: legendas e cartões da marca são PNG renderizados pelo Playwright e aplicados com `overlay`.
 
+### Identidade visual (JpDev)
+
+| Token | Valor | Uso |
+|---|---|---|
+| `brand` | `#FFC800` | CTA principal, destaques, foco visível, rótulos de seção |
+| `brand-soft` | `#FACC15` | hover do CTA, status "Planejando" |
+| `ink` | `#0A0A0A` | fundo e texto sobre amarelo (contraste 12,7:1 com o amarelo) |
+| `accent` | `#FF7A00` | apoio: aguardando aprovação, integrando, barras por agente |
+| `ok` / `bad` | `#5FBF85` / `#F07171` | só status semântico (sucesso / falha) |
+
+Tipografia: Space Grotesk (títulos, via `next/font`) e Inter (texto). O logo é `brand/jpdev-logo.png`,
+apenas redimensionado para o topbar (`web/public/jpdev-logo.png`), favicon (`web/app/icon.png`, `apple-icon.png`),
+este README e os vídeos. Os vídeos carregam as fontes do Google Fonts no render e o build falha se elas não carregarem.
+
 ### Inspiração
 
 O desenho de portões, loops limitados e "teste verde manda" é inspirado conceitualmente no
@@ -173,6 +189,9 @@ See the pattern table and the loop table above for where each pattern lives in t
 
 Demo videos (recorded with Playwright on the real stack, edited with ffmpeg) live in `docs/marketing/`;
 `scripts/marketing/record.mjs` and `scripts/marketing/build-videos.mjs` rebuild them.
+
+Brand: JpDev logo (`brand/jpdev-logo.png`, resized only), yellow `#FFC800` and black `#0A0A0A` with orange `#FF7A00`
+as support, Space Grotesk for headings and Inter for body text.
 
 ### License
 

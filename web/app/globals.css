@@ -3,26 +3,31 @@
 @theme inline {
   --font-heading: var(--font-space-grotesk), ui-sans-serif, system-ui, sans-serif;
   --font-sans: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
-  --color-brand: #6d4aff;
-  --color-brand-dark: #5b3df0;
+  /* Marca JpDev: amarelo + preto; laranja só como apoio. ok/bad são semânticos de status. */
+  --color-brand: #ffc800;
+  --color-brand-soft: #facc15;
+  --color-ink: #0a0a0a;
+  --color-accent: #ff7a00;
+  --color-ok: #5fbf85;
+  --color-bad: #f07171;
 }
 
 :root {
   color-scheme: dark;
-  --bg: #07080f;
+  --bg: #0a0a0a;
 }
 
 html,
 body {
   background: var(--bg);
-  color: #e2e8f0;
+  color: #ededed;
 }
 
 body {
   min-height: 100vh;
   background-image:
-    radial-gradient(900px 500px at 8% -10%, rgba(109, 74, 255, 0.16), transparent 60%),
-    radial-gradient(700px 400px at 100% 0%, rgba(34, 211, 238, 0.08), transparent 60%),
+    radial-gradient(900px 500px at 8% -10%, rgba(255, 200, 0, 0.09), transparent 60%),
+    radial-gradient(700px 400px at 100% 0%, rgba(255, 122, 0, 0.05), transparent 60%),
     radial-gradient(rgba(255, 255, 255, 0.045) 1px, transparent 1px);
   background-size: auto, auto, 24px 24px;
   background-attachment: fixed;
@@ -32,16 +37,16 @@ body {
    where it fits in one row. On phones it wraps to ~180px and would eat the viewport. */
 .topbar {
   backdrop-filter: blur(14px);
-  background: rgba(7, 8, 15, 0.72);
+  background: rgba(10, 10, 10, 0.78);
   border-bottom: 1px solid rgba(255, 255, 255, 0.07);
 }
 
 .eyebrow {
   font-size: 0.7rem;
   font-weight: 600;
-  letter-spacing: 0.12em;
+  letter-spacing: 0.14em;
   text-transform: uppercase;
-  color: #94a3b8;
+  color: #facc15;
 }
 
 @media (min-width: 1024px) {
@@ -79,11 +84,11 @@ body {
   position: absolute;
   inset: 0 0 auto 0;
   height: 2px;
-  background: linear-gradient(90deg, var(--accent, #6d4aff), transparent 80%);
+  background: linear-gradient(90deg, var(--accent, #ffc800), transparent 80%);
 }
 
 :focus-visible {
-  outline: 2px solid #a5b4fc;
+  outline: 2px solid #ffc800;
   outline-offset: 2px;
   border-radius: 8px;
 }
@@ -93,7 +98,7 @@ body {
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.045), rgba(255, 255, 255, 0.02));
   border: 1px solid rgba(255, 255, 255, 0.09);
   border-radius: 18px;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05), 0 0 44px -18px var(--glow, rgba(99, 102, 241, 0.35));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05), 0 0 44px -18px var(--glow, rgba(255, 200, 0, 0.18));
   transition: box-shadow 0.4s ease, border-color 0.3s ease;
 }
 
@@ -102,12 +107,12 @@ body {
   min-height: 48px;
   border-radius: 12px;
   border: 1px solid rgba(255, 255, 255, 0.14);
-  background: rgba(2, 6, 23, 0.6);
+  background: rgba(0, 0, 0, 0.55);
   padding: 0 14px;
-  color: #f1f5f9;
+  color: #f5f5f5;
 }
 .field::placeholder {
-  color: #94a3b8;
+  color: #a3a3a3;
 }
 
 .btn {
@@ -138,13 +143,14 @@ body {
   cursor: not-allowed;
 }
 .btn-brand {
-  background: linear-gradient(135deg, #6d4aff, #5b3df0);
-  border-color: rgba(167, 139, 250, 0.6);
-  color: #fff;
-  box-shadow: 0 8px 30px -8px rgba(109, 74, 255, 0.7);
+  background: #ffc800;
+  border-color: #ffc800;
+  color: #0a0a0a;
+  font-weight: 700;
+  box-shadow: 0 8px 30px -10px rgba(255, 200, 0, 0.55);
 }
 .btn-brand:hover:not(:disabled) {
-  background: linear-gradient(135deg, #7a5bff, #6648ff);
+  background: #facc15;
 }
 
 @keyframes shimmer {
@@ -164,16 +170,16 @@ body {
   position: absolute;
   inset: 0;
   width: 40%;
-  background: linear-gradient(90deg, transparent, rgba(34, 211, 238, 0.7), transparent);
+  background: linear-gradient(90deg, transparent, rgba(255, 200, 0, 0.75), transparent);
   animation: shimmer 1.4s linear infinite;
 }
 @keyframes pulse-glow {
   0%,
   100% {
-    box-shadow: 0 0 10px -4px rgba(34, 211, 238, 0.3);
+    box-shadow: 0 0 10px -4px rgba(255, 200, 0, 0.25);
   }
   50% {
-    box-shadow: 0 0 28px -2px rgba(34, 211, 238, 0.65);
+    box-shadow: 0 0 28px -2px rgba(255, 200, 0, 0.55);
   }
 }
 .pulse-glow {
@@ -202,7 +208,7 @@ body {
   }
   .shimmer::after {
     width: 100%;
-    background: rgba(34, 211, 238, 0.5);
+    background: rgba(255, 200, 0, 0.5);
   }
   * {
     scroll-behavior: auto !important;
@@ -210,10 +216,14 @@ body {
 }
 
 .btn-light {
-  background: #f1f5f9;
-  border-color: #f1f5f9;
-  color: #0f172a;
+  background: #f5f5f5;
+  border-color: #f5f5f5;
+  color: #0a0a0a;
 }
 .btn-light:hover:not(:disabled) {
   background: #fff;
+}
+
+.font-heading {
+  letter-spacing: -0.02em;
 }

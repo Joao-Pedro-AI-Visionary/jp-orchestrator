@@ -2,6 +2,21 @@
 
 Formato baseado em Keep a Changelog. Versionamento semântico.
 
+## [0.3.0] - 2026-10-31
+
+### Alterado
+- Identidade visual alinhada à marca JpDev: logo real (`brand/jpdev-logo.png`, só redimensionado) no topbar,
+  favicon (`app/icon.png`, `app/apple-icon.png`), README e vídeos.
+- Paleta amarelo `#FFC800` + preto `#0A0A0A`, laranja `#FF7A00` só como apoio. Removidos roxo, índigo, azul, ciano
+  e verde neon; sucesso/falha usam `ok`/`bad` discretos. Neutros passaram de `slate` (azulado) para `neutral`.
+  Contraste AA conferido: menor par texto/fundo é 6,9:1.
+- Tipografia: Space Grotesk nos títulos e Inter no texto (`next/font`), com tracking negativo nos títulos.
+- Vídeos de marketing regravados na stack real com a nova identidade: cartões com o logo, legendas em
+  Space Grotesk com borda amarela e selo do logo durante todo o conteúdo. O build falha se as fontes não carregarem.
+
+### Testes
+- e2e confere o logo carregado (`naturalWidth > 0`), o favicon servido (HTTP 200) e o CTA na cor da marca.
+
 ## [0.2.0] - 2026-10-31
 
 ### Alterado

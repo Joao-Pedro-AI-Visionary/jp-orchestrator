@@ -57,7 +57,7 @@ export const NewTaskForm = forwardRef<HTMLInputElement, { d: Dashboard }>(functi
       <h2 id="form-title" className="mt-1 font-heading text-xl font-bold text-white">
         Nova tarefa
       </h2>
-      <p className="mt-1 text-sm text-slate-400">Comece por um modelo pronto ou descreva do zero.</p>
+      <p className="mt-1 text-sm text-neutral-400">Comece por um modelo pronto ou descreva do zero.</p>
       <div className="mt-4 flex flex-wrap gap-2" role="group" aria-label="Modelos de tarefa">
         {PRESETS.map((p, i) => (
           <button
@@ -79,7 +79,7 @@ export const NewTaskForm = forwardRef<HTMLInputElement, { d: Dashboard }>(functi
       </div>
       <form onSubmit={submit} data-testid="new-task-form" className="mt-4 space-y-3" noValidate>
         <div>
-          <label htmlFor="task-title" className="mb-1 block text-sm font-medium text-slate-200">
+          <label htmlFor="task-title" className="mb-1 block text-sm font-medium text-neutral-200">
             Título
           </label>
           <input
@@ -94,7 +94,7 @@ export const NewTaskForm = forwardRef<HTMLInputElement, { d: Dashboard }>(functi
           />
         </div>
         <div>
-          <label htmlFor="task-desc" className="mb-1 block text-sm font-medium text-slate-200">
+          <label htmlFor="task-desc" className="mb-1 block text-sm font-medium text-neutral-200">
             Descrição
           </label>
           <textarea
@@ -108,7 +108,7 @@ export const NewTaskForm = forwardRef<HTMLInputElement, { d: Dashboard }>(functi
         </div>
         <div className="flex flex-wrap items-end gap-4">
           <div className="w-40">
-            <label htmlFor="task-budget" className="mb-1 block text-sm font-medium text-slate-200">
+            <label htmlFor="task-budget" className="mb-1 block text-sm font-medium text-neutral-200">
               Orçamento (USD)
             </label>
             <input
@@ -122,12 +122,12 @@ export const NewTaskForm = forwardRef<HTMLInputElement, { d: Dashboard }>(functi
               onChange={(e) => setBudget(e.target.value)}
             />
           </div>
-          <label htmlFor="task-approval" className="flex min-h-12 cursor-pointer items-center gap-3 text-sm text-slate-200">
+          <label htmlFor="task-approval" className="flex min-h-12 cursor-pointer items-center gap-3 text-sm text-neutral-200">
             <input
               id="task-approval"
               data-testid="task-approval-checkbox"
               type="checkbox"
-              className="size-6 accent-indigo-400"
+              className="size-6 accent-brand"
               checked={approval}
               onChange={(e) => setApproval(e.target.checked)}
             />
@@ -135,7 +135,7 @@ export const NewTaskForm = forwardRef<HTMLInputElement, { d: Dashboard }>(functi
           </label>
         </div>
         {localError && (
-          <p role="alert" data-testid="task-form-error" className="text-sm text-rose-300">
+          <p role="alert" data-testid="task-form-error" className="text-sm text-bad">
             {localError}
           </p>
         )}

@@ -23,7 +23,7 @@ export function EmptyState({ text, testId }: { text: string; testId?: string }) 
   return (
     <div
       data-testid={testId}
-      className="flex flex-col items-center gap-2 rounded-2xl border border-dashed border-white/15 px-4 py-8 text-center text-sm text-slate-400"
+      className="flex flex-col items-center gap-2 rounded-2xl border border-dashed border-white/15 px-4 py-8 text-center text-sm text-neutral-400"
     >
       <Inbox className="size-6" aria-hidden="true" />
       <p>{text}</p>
@@ -36,7 +36,7 @@ export function ErrorNote({ text, onRetry, testId }: { text: string; onRetry?: (
     <div
       role="alert"
       data-testid={testId}
-      className="flex flex-wrap items-center gap-3 rounded-2xl border border-rose-400/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-200"
+      className="flex flex-wrap items-center gap-3 rounded-2xl border border-bad/30 bg-bad/10 px-4 py-3 text-sm text-bad"
     >
       <AlertTriangle className="size-4 shrink-0" aria-hidden="true" />
       <span className="flex-1">{text}</span>
@@ -80,7 +80,7 @@ export function AnimatedNumber({
   );
 }
 
-export function ProgressBar({ ratio, tone = "bg-indigo-400", label }: { ratio: number; tone?: string; label: string }) {
+export function ProgressBar({ ratio, tone = "bg-brand", label }: { ratio: number; tone?: string; label: string }) {
   const pct = Math.max(0, Math.min(1, ratio)) * 100;
   return (
     <div

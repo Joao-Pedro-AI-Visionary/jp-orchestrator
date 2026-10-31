@@ -8,18 +8,18 @@ import { AnimatedNumber, Skeleton } from "./ui";
 export function Kpis({ d }: { d: Dashboard }) {
   const t = d.billing?.totals;
   const items = [
-    { id: "kpi-cost", label: "Custo total", icon: Coins, value: t?.costUsd ?? 0, fmt: usd, glow: "rgba(109,74,255,0.4)", ready: !!t },
-    { id: "kpi-tokens", label: "Tokens", icon: Cpu, value: t?.tokens ?? 0, fmt: int, glow: "rgba(34,211,238,0.3)", ready: !!t },
-    { id: "kpi-cache", label: "Cache hits", icon: DatabaseZap, value: t?.cacheHits ?? 0, fmt: int, glow: "rgba(52,211,153,0.3)", ready: !!t },
-    { id: "kpi-saved", label: "Economia (USD)", icon: PiggyBank, value: t?.savedUsd ?? 0, fmt: usd, glow: "rgba(52,211,153,0.3)", ready: !!t },
-    { id: "kpi-fallbacks", label: "Fallbacks do gateway", icon: Shuffle, value: d.stats?.fallbacks ?? 0, fmt: int, glow: "rgba(251,191,36,0.3)", ready: !!d.stats },
+    { id: "kpi-cost", label: "Custo total", icon: Coins, value: t?.costUsd ?? 0, fmt: usd, glow: "rgba(255,200,0,0.35)", ready: !!t },
+    { id: "kpi-tokens", label: "Tokens", icon: Cpu, value: t?.tokens ?? 0, fmt: int, glow: "rgba(255,200,0,0.35)", ready: !!t },
+    { id: "kpi-cache", label: "Cache hits", icon: DatabaseZap, value: t?.cacheHits ?? 0, fmt: int, glow: "rgba(95,191,133,0.3)", ready: !!t },
+    { id: "kpi-saved", label: "Economia (USD)", icon: PiggyBank, value: t?.savedUsd ?? 0, fmt: usd, glow: "rgba(95,191,133,0.3)", ready: !!t },
+    { id: "kpi-fallbacks", label: "Fallbacks do gateway", icon: Shuffle, value: d.stats?.fallbacks ?? 0, fmt: int, glow: "rgba(255,122,0,0.3)", ready: !!d.stats },
   ];
   return (
     <section aria-label="Indicadores" data-testid="kpi-row" className="grid grid-cols-2 gap-4 lg:grid-cols-5">
       {items.map((k) => (
         <div key={k.id} className="card kpi-accent p-4" style={{ ["--glow" as string]: k.glow, ["--accent" as string]: k.glow.replace(/0\.\d+\)$/, "1)") }}>
           <div className="eyebrow flex items-center gap-2">
-            <k.icon className="size-4 text-slate-300" aria-hidden="true" />
+            <k.icon className="size-4 text-neutral-300" aria-hidden="true" />
             {k.label}
           </div>
           <p className="mt-3 font-heading text-2xl font-bold tracking-tight text-white sm:text-3xl">

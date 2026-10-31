@@ -12,7 +12,7 @@ function Bars({ title, rows, testId, tone }: { title: string; rows: { name: stri
   const max = Math.max(...rows.map((r) => r.cost), 0.000001);
   return (
     <div>
-      <h3 className="text-sm font-semibold text-slate-200">{title}</h3>
+      <h3 className="text-sm font-semibold text-neutral-200">{title}</h3>
       {rows.length === 0 ? (
         <div className="mt-2">
           <EmptyState text="Sem dados ainda." />
@@ -21,7 +21,7 @@ function Bars({ title, rows, testId, tone }: { title: string; rows: { name: stri
         <ul className="mt-2 space-y-3" data-testid={testId}>
           {rows.map((r) => (
             <li key={r.name} data-testid={`${testId}-item`}>
-              <div className="flex justify-between text-xs text-slate-300">
+              <div className="flex justify-between text-xs text-neutral-300">
                 <span>{r.name}</span>
                 <span className="tabular-nums">
                   {usd(r.cost)} · {int(r.tokens)} tokens
@@ -67,10 +67,10 @@ export function BillingPanel({ d }: { d: Dashboard }) {
         </div>
       ) : b ? (
         <div className="mt-4 space-y-6">
-          <Bars title="Por modelo" testId="bars-model" tone="bg-cyan-400" rows={b.byModel.map((m) => ({ name: m.model, cost: m.costUsd, tokens: m.tokens }))} />
-          <Bars title="Por agente" testId="bars-agent" tone="bg-indigo-400" rows={b.byAgent.map((a) => ({ name: a.agent, cost: a.costUsd, tokens: a.tokens }))} />
+          <Bars title="Por modelo" testId="bars-model" tone="bg-brand" rows={b.byModel.map((m) => ({ name: m.model, cost: m.costUsd, tokens: m.tokens }))} />
+          <Bars title="Por agente" testId="bars-agent" tone="bg-accent" rows={b.byAgent.map((a) => ({ name: a.agent, cost: a.costUsd, tokens: a.tokens }))} />
           <div>
-            <h3 className="text-sm font-semibold text-slate-200">Por tarefa</h3>
+            <h3 className="text-sm font-semibold text-neutral-200">Por tarefa</h3>
             {b.byTask.length === 0 ? (
               <div className="mt-2">
                 <EmptyState testId="billing-tasks-empty" text="Nenhuma tarefa faturada ainda." />
@@ -79,7 +79,7 @@ export function BillingPanel({ d }: { d: Dashboard }) {
               <div className="scroll-area mt-2 overflow-x-auto">
                 <table className="w-full text-left text-sm" data-testid="billing-task-table">
                   <caption className="sr-only">Custo por tarefa</caption>
-                  <thead className="sticky top-0 bg-[#0d0f1a] text-xs text-slate-400">
+                  <thead className="sticky top-0 bg-[#111111] text-xs text-neutral-400">
                     <tr>
                       <th scope="col" className="py-2 pr-3">Tarefa</th>
                       <th scope="col" className="py-2 pr-3">Status</th>
@@ -91,7 +91,7 @@ export function BillingPanel({ d }: { d: Dashboard }) {
                     {b.byTask.map((t) => {
                       const tone = TASK_STATUS[t.status];
                       return (
-                        <tr key={t.taskId} data-testid="billing-task-row" className="border-t border-white/10 text-slate-200">
+                        <tr key={t.taskId} data-testid="billing-task-row" className="border-t border-white/10 text-neutral-200">
                           <td className="py-2 pr-3">{t.title}</td>
                           <td className="py-2 pr-3">
                             <Pill label={tone.label} text={tone.text} bg={tone.bg} />

@@ -50,7 +50,7 @@ export function Dashboard() {
           </div>
         </div>
       </main>
-      <footer className="pb-4 text-center text-xs text-slate-400">JpDev · JP Orchestrator · código aberto</footer>
+      <footer className="pb-4 text-center text-xs text-neutral-400">JpDev · JP Orchestrator · código aberto</footer>
       <div role="status" aria-live="polite" className="sr-only" data-testid="live-region">
         {d.liveMessage}
       </div>

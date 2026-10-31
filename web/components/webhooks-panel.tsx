@@ -10,9 +10,9 @@ export function WebhooksPanel({ d }: { d: Dashboard }) {
   return (
     <section aria-labelledby="wh-title" className="card p-5" data-testid="webhooks-panel">
       <SectionTitle id="wh-title" eyebrow="Eventos" title="Webhooks recebidos">
-        <span className="text-xs tabular-nums text-slate-400">{d.webhooks.length} recebidos</span>
+        <span className="text-xs tabular-nums text-neutral-400">{d.webhooks.length} recebidos</span>
       </SectionTitle>
-      <p className="mt-1 text-sm text-slate-400">Eventos assinados com HMAC e verificados no recebimento.</p>
+      <p className="mt-1 text-sm text-neutral-400">Eventos assinados com HMAC e verificados no recebimento.</p>
       <div className="mt-4">
         {d.errors.webhooks && <ErrorNote text={d.errors.webhooks} onRetry={d.reloadAll} />}
         {d.loading.webhooks ? (
@@ -41,13 +41,13 @@ export function WebhooksPanel({ d }: { d: Dashboard }) {
                       <span className="text-sm font-semibold text-white">{w.event}</span>
                       <span
                         data-testid="webhook-badge"
-                        className={`inline-flex items-center gap-1 rounded-full border border-white/10 px-2.5 py-1 text-xs font-semibold ${w.verified ? "bg-emerald-400/10 text-emerald-300" : "bg-rose-400/10 text-rose-300"}`}
+                        className={`inline-flex items-center gap-1 rounded-full border border-white/10 px-2.5 py-1 text-xs font-semibold ${w.verified ? "bg-ok/10 text-ok" : "bg-bad/10 text-bad"}`}
                       >
                         {w.verified ? <ShieldCheck className="size-3.5" aria-hidden="true" /> : <ShieldAlert className="size-3.5" aria-hidden="true" />}
                         {w.verified ? "assinatura válida" : "assinatura inválida"}
                       </span>
                     </div>
-                    <p className="mt-1 truncate text-xs text-slate-400">
+                    <p className="mt-1 truncate text-xs text-neutral-400">
                       <code className="font-mono">{w.signature}</code> · {time(w.receivedAt)}
                     </p>
                   </motion.li>

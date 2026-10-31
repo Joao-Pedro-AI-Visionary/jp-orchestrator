@@ -28,7 +28,7 @@ export function TaskList({ d }: { d: Dashboard }) {
     <section aria-labelledby="tasks-title" className="card p-5" data-testid="task-list">
       <SectionTitle id="tasks-title" eyebrow="Fila" title="Tarefas">
         {!d.loading.tasks && (
-          <span className="text-xs tabular-nums text-slate-400" data-testid="tasks-count">
+          <span className="text-xs tabular-nums text-neutral-400" data-testid="tasks-count">
             {visible.length} de {d.tasks.length}
           </span>
         )}
@@ -41,7 +41,7 @@ export function TaskList({ d }: { d: Dashboard }) {
             data-testid={f.testId}
             aria-pressed={filter === f.id}
             onClick={() => setFilter(f.id)}
-            className={`btn !min-h-12 ${filter === f.id ? "!border-white/40 !bg-white/15 text-white" : "text-slate-300"}`}
+            className={`btn !min-h-12 ${filter === f.id ? "!border-white/40 !bg-white/15 text-white" : "text-neutral-300"}`}
           >
             {f.label}
           </button>
@@ -72,16 +72,16 @@ export function TaskList({ d }: { d: Dashboard }) {
                       data-status={t.status}
                       aria-pressed={selected}
                       onClick={() => d.select(t.id)}
-                      className={`card block min-h-12 w-full p-4 text-left ${selected ? "!border-indigo-300/70" : ""}`}
+                      className={`card block min-h-12 w-full p-4 text-left ${selected ? "!border-brand/70" : ""}`}
                       style={{ ["--glow" as string]: tone.glow }}
                     >
                       <div className="flex items-start justify-between gap-3">
                         <span className="font-semibold text-white">{t.title}</span>
                         <Pill label={tone.label} text={tone.text} bg={tone.bg} testId="task-status" />
                       </div>
-                      <div className="mt-3 flex items-center gap-3 text-xs text-slate-300">
+                      <div className="mt-3 flex items-center gap-3 text-xs text-neutral-300">
                         <div className="flex-1">
-                          <ProgressBar ratio={t.budgetUsd ? t.spentUsd / t.budgetUsd : 0} tone={over ? "bg-rose-400" : "bg-indigo-400"} label={`Custo de ${t.title} em relação ao orçamento`} />
+                          <ProgressBar ratio={t.budgetUsd ? t.spentUsd / t.budgetUsd : 0} tone={over ? "bg-bad" : "bg-brand"} label={`Custo de ${t.title} em relação ao orçamento`} />
                         </div>
                         <span className="tabular-nums">
                           {usd(t.spentUsd)} / {usd(t.budgetUsd)}

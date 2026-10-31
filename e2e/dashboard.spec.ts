@@ -50,6 +50,14 @@ test.beforeAll(async () => {
 test('fluxo completo do dashboard: todos os botões executam ações reais', async ({ page }) => {
   await page.goto('/');
   await expect(page.getByTestId('brand')).toContainText('JpDev');
+  // identidade JpDev: logo real carregado, favicon do logo e CTA amarelo da marca
+  const logo = page.getByTestId('brand-logo');
+  await expect(logo).toBeVisible();
+  expect(await logo.evaluate((img: HTMLImageElement) => img.complete && img.naturalWidth > 0)).toBe(true);
+  const favicon = await page.locator('link[rel="icon"]').first().getAttribute('href');
+  expect(favicon).toMatch(/icon/);
+  expect((await page.request.get(favicon!)).status()).toBe(200);
+  await expect(page.getByTestId('new-task-cta')).toHaveCSS('background-color', 'rgb(255, 200, 0)');
   await expect(page.getByTestId('health-postgres')).toContainText(/ativo|ok|online/i);
   await expect(page.getByTestId('health-redis')).toContainText(/ativo|ok|online/i);
   await expect(page.getByTestId('live-indicator')).toBeVisible();

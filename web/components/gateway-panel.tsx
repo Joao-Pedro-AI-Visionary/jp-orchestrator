@@ -28,7 +28,7 @@ export function GatewayPanel({ d }: { d: Dashboard }) {
       <dl className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-5">
         {statItems.map((i) => (
           <div key={i.id} className="rounded-xl border border-white/10 bg-white/[0.03] p-3">
-            <dt className="text-xs text-slate-400">{i.label}</dt>
+            <dt className="text-xs text-neutral-400">{i.label}</dt>
             <dd className="mt-1 font-heading text-lg font-bold text-white" data-testid={i.id}>
               {i.v === undefined ? <Skeleton className="h-6 w-10" /> : int(i.v)}
             </dd>
@@ -41,7 +41,7 @@ export function GatewayPanel({ d }: { d: Dashboard }) {
         </div>
       )}
 
-      <h3 className="mt-6 text-sm font-semibold text-slate-200">Fluxo das chamadas recentes</h3>
+      <h3 className="mt-6 text-sm font-semibold text-neutral-200">Fluxo das chamadas recentes</h3>
       <div className="mt-2" aria-label="Chamadas recentes ao gateway" data-testid="gateway-flow">
         {d.calls.length === 0 ? (
           <EmptyState testId="flow-empty" text="Aguardando chamadas ao gateway. Elas aparecem aqui ao vivo." />
@@ -58,15 +58,15 @@ export function GatewayPanel({ d }: { d: Dashboard }) {
                   data-testid="gateway-flow-item"
                   data-cached={String(c.cached)}
                   data-fallback={c.fallbackFrom ? "true" : "false"}
-                  className="flex flex-wrap items-center gap-2 rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2 text-xs text-slate-200"
+                  className="flex flex-wrap items-center gap-2 rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2 text-xs text-neutral-200"
                 >
                   <span className="inline-flex items-center gap-1 rounded-lg bg-white/10 px-2 py-1">
                     <Send className="size-3" aria-hidden="true" />
                     {c.agent}
                   </span>
-                  <ArrowRight className="size-3.5 text-slate-400" aria-hidden="true" />
+                  <ArrowRight className="size-3.5 text-neutral-400" aria-hidden="true" />
                   {c.cached ? (
-                    <span className="inline-flex items-center gap-1 rounded-lg bg-emerald-400/10 px-2 py-1 text-emerald-300">
+                    <span className="inline-flex items-center gap-1 rounded-lg bg-ok/10 px-2 py-1 text-ok">
                       <DatabaseZap className="size-3" aria-hidden="true" />
                       cache hit
                     </span>
@@ -74,14 +74,14 @@ export function GatewayPanel({ d }: { d: Dashboard }) {
                     <>
                       {c.fallbackFrom && (
                         <>
-                          <span className="rounded-lg bg-rose-400/10 px-2 py-1 text-rose-300 line-through">{c.fallbackFrom}</span>
-                          <CornerDownRight className="size-3.5 text-amber-300" aria-label="fallback" />
+                          <span className="rounded-lg bg-bad/10 px-2 py-1 text-bad line-through">{c.fallbackFrom}</span>
+                          <CornerDownRight className="size-3.5 text-accent" aria-label="fallback" />
                         </>
                       )}
-                      <span className="rounded-lg bg-cyan-400/10 px-2 py-1 text-cyan-300">{c.model}</span>
+                      <span className="rounded-lg bg-brand/10 px-2 py-1 text-brand">{c.model}</span>
                     </>
                   )}
-                  <span className="ml-auto tabular-nums text-slate-400">
+                  <span className="ml-auto tabular-nums text-neutral-400">
                     {int(c.tokens)} tokens · {usd(c.costUsd)} · {time(c.at)}
                   </span>
                 </motion.li>
@@ -91,7 +91,7 @@ export function GatewayPanel({ d }: { d: Dashboard }) {
         )}
       </div>
 
-      <h3 className="mt-6 text-sm font-semibold text-slate-200">Modelos</h3>
+      <h3 className="mt-6 text-sm font-semibold text-neutral-200">Modelos</h3>
       <div className="mt-2">
         {d.errors.models && <ErrorNote text={d.errors.models} onRetry={d.reloadAll} />}
         {d.loading.models ? (
@@ -115,11 +115,11 @@ export function GatewayPanel({ d }: { d: Dashboard }) {
                 >
                   <div>
                     <p className="flex items-center gap-2 text-sm font-semibold text-white">
-                      <span className={`size-2 rounded-full ${m.healthy ? "bg-emerald-400" : "bg-rose-400"}`} aria-hidden="true" />
+                      <span className={`size-2 rounded-full ${m.healthy ? "bg-ok" : "bg-bad"}`} aria-hidden="true" />
                       {m.id}
                       <span className="sr-only">{m.healthy ? "saudável" : "fora do ar"}</span>
                     </p>
-                    <p className="text-xs text-slate-400">
+                    <p className="text-xs text-neutral-400">
                       {m.provider} · {TIER_LABEL[m.tier]} · entrada {usd(m.inputPer1k)}/1k · saída {usd(m.outputPer1k)}/1k
                     </p>
                   </div>

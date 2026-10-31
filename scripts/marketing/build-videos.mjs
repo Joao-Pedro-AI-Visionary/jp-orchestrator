@@ -29,53 +29,73 @@ const SEGMENTS = [
 ];
 
 const FORMATS = [
-  { file: 'tiktok-instagram-9x16.mp4', source: 'mobile', W: 1080, H: 1920, caption: { top: 300, size: 50, width: 900 } },
-  { file: 'linkedin-1x1.mp4', source: 'desktop', W: 1080, H: 1080, framed: true, caption: { top: 880, size: 40, width: 980 } },
-  { file: 'linkedin-16x9.mp4', source: 'desktop', W: 1920, H: 1080, caption: { top: 880, size: 46, width: 1500 } },
+  { file: 'tiktok-instagram-9x16.mp4', source: 'mobile', W: 1080, H: 1920, caption: { top: 300, size: 54, width: 940 }, badge: { top: 1740, left: 40, h: 120 } },
+  { file: 'linkedin-1x1.mp4', source: 'desktop', W: 1080, H: 1080, framed: true, caption: { top: 880, size: 42, width: 980 } },
+  { file: 'linkedin-16x9.mp4', source: 'desktop', W: 1920, H: 1080, caption: { top: 880, size: 48, width: 1500 }, badge: { top: 950, left: 30, h: 96 } },
 ];
 
-// aspas simples: o valor vai dentro de style="..."
-const FONT = `-apple-system, 'SF Pro Display', 'Helvetica Neue', Arial, sans-serif`;
+// Identidade JpDev: logo real (brand/jpdev-logo.png, só redimensionado), amarelo/preto, laranja de apoio.
+// Tipografia: Space Grotesk (títulos) + Inter (texto). Aspas simples: o valor vai dentro de style="...".
+const DISPLAY = `'Space Grotesk', sans-serif`;
+const TEXT = `'Inter', sans-serif`;
+const FONTS_CSS = 'https://fonts.googleapis.com/css2?family=Inter:wght@500;600;700&family=Space+Grotesk:wght@600;700&display=block';
+const Y = '#FFC800';
+const INK = '#0A0A0A';
+const ORANGE = '#FF7A00';
+const LOGO = `data:image/png;base64,${readFileSync(resolve('brand/jpdev-logo.png')).toString('base64')}`;
 const esc = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;');
-const logo = (px) =>
-  `<div style="width:${px}px;height:${px}px;border-radius:${px * 0.28}px;background:#6d4aff;display:grid;place-items:center;color:#fff;font-weight:800;font-size:${px * 0.42}px;box-shadow:0 0 ${px * 0.7}px -${px * 0.12}px rgba(109,74,255,.9)">Jp</div>`;
-const bg = `background-color:#07080f;background-image:radial-gradient(900px 600px at 20% 0%, rgba(109,74,255,.35), transparent 60%), radial-gradient(700px 500px at 100% 100%, rgba(34,211,238,.14), transparent 60%);`;
+const logo = (h) => `<img src="${LOGO}" style="height:${h}px;width:auto;display:block" alt="">`;
+const wordmark = (px) =>
+  `<span style="font-family:${DISPLAY};font-weight:700;letter-spacing:-0.02em;font-size:${px}px;color:#fff">Jp<span style="color:${Y}">Dev</span></span>`;
+const bg = `background-color:${INK};background-image:radial-gradient(900px 600px at 20% 0%, rgba(255,200,0,.16), transparent 60%), radial-gradient(700px 500px at 100% 100%, rgba(255,122,0,.08), transparent 60%);`;
+const page = (W, H, style, body) =>
+  `<html><head><link rel="stylesheet" href="${FONTS_CSS}"></head><body style="margin:0;width:${W}px;height:${H}px;${style}font-family:${TEXT};color:#fff">${body}</body></html>`;
 
 function cardHtml(W, H, kind) {
   const s = Math.min(W, H) / 1080;
   const body =
     kind === 'intro'
-      ? `${logo(140 * s)}
-         <div style="font-size:${120 * s}px;font-weight:800;letter-spacing:-2px;margin-top:${40 * s}px">JpDev</div>
-         <div style="font-size:${46 * s}px;color:#c4b5fd;font-weight:600;margin-top:${8 * s}px">JP Orchestrator</div>
-         <div style="font-size:${36 * s}px;color:#cbd5e1;margin-top:${36 * s}px;max-width:${W * 0.8}px">Orquestração de agentes de código com custo sob controle</div>`
-      : `${logo(110 * s)}
-         <div style="font-size:${80 * s}px;font-weight:800;letter-spacing:-1px;margin-top:${36 * s}px">JP Orchestrator</div>
-         <div style="font-size:${38 * s}px;color:#cbd5e1;margin-top:${18 * s}px">Código aberto, licença MIT</div>
-         <div style="font-size:${30 * s}px;color:#a5b4fc;margin-top:${34 * s}px;padding:${14 * s}px ${26 * s}px;border:1px solid rgba(165,180,252,.45);border-radius:${18 * s}px">${REPO}</div>
-         <div style="font-size:${34 * s}px;font-weight:700;margin-top:${48 * s}px;color:#fff">JpDev</div>`;
-  return `<body style="margin:0;width:${W}px;height:${H}px;${bg}font-family:${FONT};color:#fff;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center">${body}</body>`;
+      ? `${logo(300 * s)}
+         <div style="margin-top:${30 * s}px">${wordmark(120 * s)}</div>
+         <div style="font-family:${DISPLAY};font-size:${48 * s}px;color:${Y};font-weight:700;margin-top:${8 * s}px">JP Orchestrator</div>
+         <div style="font-size:${34 * s}px;color:#d4d4d4;font-weight:500;margin-top:${30 * s}px;max-width:${W * 0.8}px">Orquestração de agentes de código com custo sob controle</div>`
+      : `${logo(240 * s)}
+         <div style="font-family:${DISPLAY};font-size:${80 * s}px;font-weight:700;letter-spacing:-0.02em;margin-top:${30 * s}px">JP Orchestrator</div>
+         <div style="font-size:${36 * s}px;color:#d4d4d4;font-weight:500;margin-top:${16 * s}px">Código aberto, licença MIT</div>
+         <div style="font-size:${30 * s}px;font-weight:700;color:${INK};background:${Y};margin-top:${34 * s}px;padding:${14 * s}px ${26 * s}px;border-radius:${18 * s}px">${REPO}</div>
+         <div style="margin-top:${40 * s}px">${wordmark(40 * s)}</div>`;
+  return page(W, H, `${bg}display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;`, body);
 }
 
-function captionHtml(W, H, c, text) {
-  return `<body style="margin:0;width:${W}px;height:${H}px;background:transparent;font-family:${FONT}">
+// Legenda + selo do logo no canto: a marca fica visível durante todo o conteúdo.
+function captionHtml(W, H, c, text, badge) {
+  const b = badge
+    ? `<div style="position:absolute;top:${badge.top}px;left:${badge.left}px;display:flex;align-items:center;gap:${badge.h * 0.25}px;padding:${badge.h * 0.12}px ${badge.h * 0.3}px ${badge.h * 0.12}px ${badge.h * 0.15}px;border-radius:${badge.h * 0.3}px;background:rgba(10,10,10,.82);border:2px solid rgba(255,200,0,.6)">${logo(badge.h)}${wordmark(badge.h * 0.42)}</div>`
+    : '';
+  return page(W, H, 'background:transparent;', `${b}
     <div style="position:absolute;top:${c.top}px;left:50%;transform:translateX(-50%);max-width:${c.width}px;width:max-content;
-      padding:${c.size * 0.45}px ${c.size * 0.75}px;border-radius:${c.size * 0.5}px;background:rgba(7,8,15,.86);
-      border:2px solid rgba(139,92,246,.75);box-shadow:0 12px 40px -10px rgba(109,74,255,.7);
-      color:#fff;font-weight:700;font-size:${c.size}px;line-height:1.25;text-align:center">${esc(text)}</div></body>`;
+      padding:${c.size * 0.45}px ${c.size * 0.75}px;border-radius:${c.size * 0.4}px;background:rgba(10,10,10,.9);
+      border:3px solid ${Y};box-shadow:0 12px 40px -12px rgba(255,200,0,.55);
+      font-family:${DISPLAY};color:#fff;font-weight:700;font-size:${c.size}px;line-height:1.2;letter-spacing:-0.01em;text-align:center">${esc(text)}<span style="color:${ORANGE}">.</span></div>`);
 }
 
 function frameHtml(W, H) {
-  return `<body style="margin:0;width:${W}px;height:${H}px;${bg}font-family:${FONT};color:#fff">
-    <div style="position:absolute;top:70px;left:50px;display:flex;align-items:center;gap:22px">${logo(84)}
-      <div><div style="font-size:52px;font-weight:800;letter-spacing:-1px">JpDev</div>
-      <div style="font-size:28px;color:#c4b5fd;font-weight:600">JP Orchestrator</div></div></div></body>`;
+  return page(W, H, bg, `<div style="position:absolute;top:50px;left:50px;display:flex;align-items:center;gap:22px">${logo(120)}
+      <div>${wordmark(56)}
+      <div style="font-family:${DISPLAY};font-size:30px;color:${Y};font-weight:700">JP Orchestrator</div></div></div>`);
 }
 
 async function renderPngs(browser, f) {
   const page = await browser.newPage({ viewport: { width: f.W, height: f.H } });
   const shot = async (html, name, transparent = false) => {
-    await page.setContent(html);
+    await page.setContent(html, { waitUntil: 'networkidle' });
+    const ok = await page.evaluate(async () => {
+      const faces = ["700 40px 'Space Grotesk'", "500 20px 'Inter'", "700 20px 'Inter'"];
+      await Promise.all(faces.map((f) => document.fonts.load(f)));
+      await document.fonts.ready;
+      return faces.every((f) => document.fonts.check(f));
+    });
+    if (!ok) throw new Error('fontes da marca (Space Grotesk/Inter) não carregaram');
     const path = join(tmp, `${f.W}x${f.H}-${name}.png`);
     await page.screenshot({ path, omitBackground: transparent });
     return path;
@@ -86,7 +106,7 @@ async function renderPngs(browser, f) {
     captions: [],
   };
   if (f.framed) r.frame = await shot(frameHtml(f.W, f.H), 'frame');
-  for (const [i, seg] of SEGMENTS.entries()) r.captions.push(await shot(captionHtml(f.W, f.H, f.caption, seg[4]), `cap${i}`, true));
+  for (const [i, seg] of SEGMENTS.entries()) r.captions.push(await shot(captionHtml(f.W, f.H, f.caption, seg[4], f.badge), `cap${i}`, true));
   await page.close();
   return r;
 }

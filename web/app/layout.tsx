@@ -8,7 +8,6 @@ const body = Inter({ subsets: ["latin"], variable: "--font-inter", display: "swa
 export const metadata: Metadata = {
   title: "JpDev | JP Orchestrator",
   description: "Painel de orquestração de subagentes, gateway de modelos e custos.",
-  icons: { icon: "/icon.svg" },
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

@@ -29,10 +29,10 @@ function Lane({ s, reduce }: { s: Subtask; reduce: boolean }) {
     >
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex items-center gap-2">
-          <Icon className="size-5 text-slate-300" aria-hidden="true" />
+          <Icon className="size-5 text-neutral-300" aria-hidden="true" />
           <div>
             <p className="text-sm font-semibold text-white">{s.title}</p>
-            <p className="text-xs text-slate-400">
+            <p className="text-xs text-neutral-400">
               {AGENT_LABEL[s.agent] ?? s.agent}
               {s.model ? ` · ${s.model}` : ""} · tentativa {s.attempt}
             </p>
@@ -45,11 +45,11 @@ function Lane({ s, reduce }: { s: Subtask; reduce: boolean }) {
       <div className={`mt-3 h-1.5 w-full rounded-full bg-white/10 ${running ? "shimmer" : ""}`} aria-hidden="true">
         {!running && (
           <div
-            className={`h-full rounded-full transition-[width] duration-500 ${s.status === "done" ? "w-full bg-emerald-400" : s.status === "failed" ? "w-full bg-rose-400" : "w-0"}`}
+            className={`h-full rounded-full transition-[width] duration-500 ${s.status === "done" ? "w-full bg-ok" : s.status === "failed" ? "w-full bg-bad" : "w-0"}`}
           />
         )}
       </div>
-      {s.output && <p className="mt-3 line-clamp-3 text-xs text-slate-300">{s.output}</p>}
+      {s.output && <p className="mt-3 line-clamp-3 text-xs text-neutral-300">{s.output}</p>}
     </motion.li>
   );
 }
@@ -72,8 +72,8 @@ function Detail({ d, data }: { d: Dashboard; data: TaskDetail }) {
           </h3>
           <Pill label={tone.label} text={tone.text} bg={tone.bg} testId="panel-status" />
         </div>
-        <p className="mt-2 text-sm text-slate-300">{task.description}</p>
-        <p className="mt-3 text-sm text-slate-300" data-testid="correction-rounds">
+        <p className="mt-2 text-sm text-neutral-300">{task.description}</p>
+        <p className="mt-3 text-sm text-neutral-300" data-testid="correction-rounds">
           Rodadas de correção: <strong className="text-white">{task.correctionRounds}</strong> de 2
         </p>
       </div>
@@ -83,22 +83,22 @@ function Detail({ d, data }: { d: Dashboard; data: TaskDetail }) {
           initial={{ opacity: 0, scale: reduce ? 1 : 0.96 }}
           animate={{ opacity: 1, scale: 1 }}
           data-testid="completion-banner"
-          className="rounded-2xl border border-emerald-400/40 bg-emerald-500/10 p-4"
-          style={{ boxShadow: "0 0 40px -14px rgba(52,211,153,0.6)" }}
+          className="rounded-2xl border border-ok/40 bg-ok/10 p-4"
+          style={{ boxShadow: "0 0 40px -14px rgba(95,191,133,0.6)" }}
         >
-          <div className="flex items-center gap-2 font-heading text-lg font-bold text-emerald-200">
+          <div className="flex items-center gap-2 font-heading text-lg font-bold text-ok">
             <CheckCircle2 className="size-6" aria-hidden="true" />
             Tarefa concluída
           </div>
-          {task.result?.summary && <p className="mt-2 text-sm text-slate-200">{task.result.summary}</p>}
+          {task.result?.summary && <p className="mt-2 text-sm text-neutral-200">{task.result.summary}</p>}
           {task.result && task.result.artifacts.length > 0 && (
-            <ul className="mt-2 list-inside list-disc text-sm text-slate-300">
+            <ul className="mt-2 list-inside list-disc text-sm text-neutral-300">
               {task.result.artifacts.map((a) => (
                 <li key={a}>{a}</li>
               ))}
             </ul>
           )}
-          <p className="mt-2 text-xs text-slate-300">
+          <p className="mt-2 text-xs text-neutral-300">
             Custo final {usd(task.spentUsd)} de {usd(task.budgetUsd)}
           </p>
         </motion.div>
@@ -107,9 +107,9 @@ function Detail({ d, data }: { d: Dashboard; data: TaskDetail }) {
       {task.error && task.status !== "completed" && <ErrorNote text={task.error} testId="task-error" />}
 
       {awaiting && (
-        <div data-testid="approval-box" className="rounded-2xl border border-amber-400/40 bg-amber-400/10 p-4" style={{ boxShadow: "0 0 36px -14px rgba(251,191,36,0.6)" }}>
-          <p className="font-semibold text-amber-200">Aprovação humana necessária</p>
-          <label htmlFor="approval-note" className="mt-3 block text-sm text-slate-200">
+        <div data-testid="approval-box" className="rounded-2xl border border-accent/40 bg-accent/10 p-4" style={{ boxShadow: "0 0 36px -14px rgba(255,122,0,0.6)" }}>
+          <p className="font-semibold text-accent">Aprovação humana necessária</p>
+          <label htmlFor="approval-note" className="mt-3 block text-sm text-neutral-200">
             Observação (opcional)
           </label>
           <textarea id="approval-note" data-testid="approval-note" className="field mt-1 min-h-20 py-2" value={note} onChange={(e) => setNote(e.target.value)} />
@@ -126,7 +126,7 @@ function Detail({ d, data }: { d: Dashboard; data: TaskDetail }) {
         </div>
       )}
       {!awaiting && approval && approval.status !== "pending" && (
-        <p className="text-sm text-slate-300" data-testid="approval-resolved">
+        <p className="text-sm text-neutral-300" data-testid="approval-resolved">
           Aprovação {approval.status === "approved" ? "concedida" : "negada"}
           {approval.note ? `: ${approval.note}` : "."}
         </p>
@@ -145,11 +145,11 @@ function Detail({ d, data }: { d: Dashboard; data: TaskDetail }) {
             <Play className="size-4" aria-hidden="true" />
             Subagentes ao vivo
           </h4>
-          <span className="text-sm text-slate-300" data-testid="subtask-progress-label">
+          <span className="text-sm text-neutral-300" data-testid="subtask-progress-label">
             {done} de {subtasks.length} concluídos
           </span>
         </div>
-        <ProgressBar ratio={subtasks.length ? done / subtasks.length : 0} tone="bg-emerald-400" label="Progresso das subtarefas" />
+        <ProgressBar ratio={subtasks.length ? done / subtasks.length : 0} tone="bg-ok" label="Progresso das subtarefas" />
         {subtasks.length === 0 ? (
           <div className="mt-3">
             <EmptyState testId="lanes-empty" text="O plano ainda não gerou subtarefas." />
@@ -170,7 +170,7 @@ function Detail({ d, data }: { d: Dashboard; data: TaskDetail }) {
         {sortedSnaps.length === 0 ? (
           <EmptyState testId="timeline-empty" text="Nenhum snapshot de contexto ainda." />
         ) : (
-          <ol className="relative ml-3 border-l-2 border-indigo-400/30" data-testid="timeline">
+          <ol className="relative ml-3 border-l-2 border-brand/30" data-testid="timeline">
             <AnimatePresence initial={false}>
               {sortedSnaps.map((sn) => (
                 <motion.li
@@ -182,11 +182,11 @@ function Detail({ d, data }: { d: Dashboard; data: TaskDetail }) {
                   data-version={sn.version}
                   className="relative mb-4 ml-6 rounded-xl border border-white/10 bg-white/[0.03] p-3"
                 >
-                  <GitCommitVertical className="absolute -left-[2.15rem] top-3 size-5 rounded-full bg-[#07080f] text-indigo-300" aria-hidden="true" />
+                  <GitCommitVertical className="absolute -left-[2.15rem] top-3 size-5 rounded-full bg-[#0a0a0a] text-brand" aria-hidden="true" />
                   <p className="text-sm font-semibold text-white">
                     v{sn.version} · {sn.label}
                   </p>
-                  <p className="mt-1 text-xs text-slate-300">
+                  <p className="mt-1 text-xs text-neutral-300">
                     <code className="rounded bg-white/10 px-1.5 py-0.5">{shortHash(sn.hash)}</code>
                     {sn.parentHash ? (
                       <>
@@ -218,12 +218,12 @@ function Detail({ d, data }: { d: Dashboard; data: TaskDetail }) {
               <li key={`${m.key}-${m.at}`} data-testid="memory-item" className="rounded-xl border border-white/10 bg-white/[0.03] p-3 text-sm">
                 <div className="flex items-center justify-between gap-2">
                   <span className="flex items-center gap-2 font-semibold text-white">
-                    <CircleDot className="size-3.5 text-indigo-300" aria-hidden="true" />
+                    <CircleDot className="size-3.5 text-brand" aria-hidden="true" />
                     {m.key}
                   </span>
-                  <span className="text-xs text-slate-400">{m.agent}</span>
+                  <span className="text-xs text-neutral-400">{m.agent}</span>
                 </div>
-                <p className="mt-1 break-words text-xs text-slate-300">{typeof m.value === "string" ? m.value : JSON.stringify(m.value)}</p>
+                <p className="mt-1 break-words text-xs text-neutral-300">{typeof m.value === "string" ? m.value : JSON.stringify(m.value)}</p>
               </li>
             ))}
           </ul>
@@ -240,7 +240,7 @@ function Detail({ d, data }: { d: Dashboard; data: TaskDetail }) {
           <div className="overflow-x-auto">
             <table className="w-full text-left text-sm" data-testid="usage-table">
               <caption className="sr-only">Consumo por chamada</caption>
-              <thead className="text-xs text-slate-400">
+              <thead className="text-xs text-neutral-400">
                 <tr>
                   <th scope="col" className="py-2 pr-3">Agente</th>
                   <th scope="col" className="py-2 pr-3">Modelo</th>
@@ -251,7 +251,7 @@ function Detail({ d, data }: { d: Dashboard; data: TaskDetail }) {
               </thead>
               <tbody>
                 {usage.map((u) => (
-                  <tr key={u.id} data-testid="usage-row" className="border-t border-white/10 text-slate-200">
+                  <tr key={u.id} data-testid="usage-row" className="border-t border-white/10 text-neutral-200">
                     <td className="py-2 pr-3">{AGENT_LABEL[u.agent] ?? u.agent}</td>
                     <td className="py-2 pr-3">{u.model}</td>
                     <td className="py-2 pr-3 text-right tabular-nums">{int(u.promptTokens + u.completionTokens)}</td>
