@@ -1,0 +1,23 @@
+{
+  "name": "jp-orchestrator",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Orquestrador de agentes de código com AI Gateway, execução durável, memória compartilhada e contexto versionado.",
+  "license": "MIT",
+  "author": "JpDev",
+  "scripts": {
+    "install:all": "npm ci && npm --prefix api ci && npm --prefix web ci",
+    "lint": "npm --prefix api run lint && npm --prefix web run lint",
+    "typecheck": "npm --prefix api run typecheck && npm --prefix web run typecheck",
+    "build": "npm --prefix api run build && npm --prefix web run build",
+    "test": "npm --prefix api test",
+    "e2e": "playwright test",
+    "prepush": "npm run lint && npm run typecheck && npm run build && npm test",
+    "billing:report": "node scripts/billing-report.mjs",
+    "budget:check": "node scripts/budget-check.mjs",
+    "loop:run": "node scripts/run-loop.mjs"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.64.1"
+  }
+}

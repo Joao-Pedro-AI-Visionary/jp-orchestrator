@@ -1,0 +1,14 @@
+node_modules/
+dist/
+.next/
+out/
+coverage/
+reports/
+test-results/
+playwright-report/
+.env
+.env.*
+!.env.example
+.serena/
+.DS_Store
+*.log
