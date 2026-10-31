@@ -1,13 +1,32 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { OutboxEvent, ToolCall } from '../common/types';
+import { OutboxEvent } from '../common/types';
 import { STORE, TOOL_REGISTRY } from '../common/tokens';
-import { canonicalJson, newId, nowIso, sha256 } from '../common/util';
+import { canonicalJson, envNumber, newId, nowIso, sha256, sleep, TimeoutError, withTimeout } from '../common/util';
 import { Store } from '../persistence/store.port';
 import { KeyedStrategy, StrategyRegistry } from '../strategy/strategy-registry';
 
-/** A tool a subagent can call. Implementations must be pure functions of args (side effects go to the outbox). */
+/** Passed to every handler run. */
+export interface ToolContext {
+  /**
+   * Stable across retries of the same call, including a re-run after a crash.
+   * Handlers with external side effects must forward it (e.g. as an
+   * Idempotency-Key header) so the downstream system applies the effect once.
+   */
+  idempotencyKey: string;
+  /** 1 on the first run; greater than 1 when a previous attempt crashed or failed. */
+  attempt: number;
+}
+
+/** A tool a subagent can call. Side effects must be idempotent on ctx.idempotencyKey. */
 export interface ToolHandler extends KeyedStrategy {
-  execute(args: Record<string, unknown>): Promise<Record<string, unknown>>;
+  execute(args: Record<string, unknown>, ctx: ToolContext): Promise<Record<string, unknown>>;
+}
+
+/** Another worker kept a live lease on this call for longer than one lease. Retry later. */
+export class ToolCallInProgressError extends Error {
+  constructor(readonly key: string) {
+    super(`Ferramenta com Idempotency-Key ${key} ainda em execução`);
+  }
 }
 
 export interface ToolInvocation {
@@ -26,13 +45,20 @@ export const outboxEvent = (type: string, payload: Record<string, unknown>): Out
 
 /**
  * Idempotency-Key + transactional outbox for tool calls.
- * A retried step (crash, resume, correction) with the same key returns the
- * stored result and never executes the tool twice. The side-effect event is
- * written in the same transaction as the result, and the relay delivers it.
+ * 1. Claim: a 'started' row with a lease is persisted before the handler runs.
+ * 2. Execute: the handler gets ctx.idempotencyKey and must apply side effects idempotently.
+ *    It is bounded by the lease, so the owner gives up before another worker may take over.
+ * 3. Complete: result + outbox event are written in one transaction, fenced by the attempt.
+ * A retry with the same key returns the stored result. If a process died between
+ * the effect and step 3, the retry finds the 'started' row, waits for the lease to
+ * expire (at most one lease), then reconciles by re-running the handler with the same key.
+ * TOOL_LEASE_MS (default 10s) must stay below SUBAGENT_TIMEOUT_MS (30s) so a resumed
+ * subagent can wait out a dead owner's lease.
  */
 @Injectable()
 export class ToolInvoker {
   executions = 0;
+  private readonly leaseMs = envNumber('TOOL_LEASE_MS', 10_000);
 
   constructor(
     @Inject(STORE) private readonly store: Store,
@@ -46,18 +72,46 @@ export class ToolInvoker {
   async invoke(inv: ToolInvocation): Promise<{ result: Record<string, unknown>; replay: boolean; key: string }> {
     const key = ToolInvoker.keyFor(inv);
     const existing = await this.store.findToolCall(key);
-    if (existing) return { result: existing.result, replay: true, key };
+    if (existing?.status === 'completed') return { result: existing.result!, replay: true, key };
 
     const handler = this.tools.resolve(inv.tool);
+    const claimed = await this.claim(inv, key);
+    if ('result' in claimed) return { result: claimed.result, replay: true, key };
+    const { attempt } = claimed;
+
     this.executions++;
-    const result = await handler.execute(inv.args);
-    const call: ToolCall = {
-      idempotencyKey: key, taskId: inv.taskId, subtaskId: inv.subtaskId, tool: inv.tool,
-      args: inv.args, result, createdAt: nowIso(),
-    };
-    const saved = await this.store.saveToolCallWithOutbox(
-      call, outboxEvent('tool.executed', { taskId: inv.taskId, tool: inv.tool, idempotencyKey: key, result }),
+    let result: Record<string, unknown>;
+    try {
+      result = await withTimeout(handler.execute(inv.args, { idempotencyKey: key, attempt }), this.leaseMs, `ferramenta ${inv.tool}`);
+    } catch (err) {
+      // A timed out handler may still be running: keep its lease so nobody overlaps it.
+      if (!(err instanceof TimeoutError)) await this.store.releaseToolCall(key, attempt).catch(() => undefined);
+      throw err;
+    }
+    const saved = await this.store.completeToolCallWithOutbox(
+      key, attempt, result,
+      outboxEvent('tool.executed', { taskId: inv.taskId, tool: inv.tool, idempotencyKey: key, result }),
     );
-    return { result: saved.result, replay: saved.createdAt !== call.createdAt, key };
+    if (saved.status !== 'completed') throw new ToolCallInProgressError(key);
+    return { result: saved.result!, replay: saved.attempts !== attempt, key };
+  }
+
+  /**
+   * Claims the call, waiting (at most about one lease) while another worker holds a live lease.
+   * Returns the attempt number, or the stored result if the call completed meanwhile.
+   */
+  private async claim(inv: ToolInvocation, key: string): Promise<{ attempt: number } | { result: Record<string, unknown> }> {
+    const deadline = Date.now() + this.leaseMs + 1_000;
+    for (;;) {
+      const claim = await this.store.claimToolCall({
+        idempotencyKey: key, taskId: inv.taskId, subtaskId: inv.subtaskId, tool: inv.tool, args: inv.args, createdAt: nowIso(),
+      }, this.leaseMs);
+      if (claim) return { attempt: claim.attempts };
+      const current = await this.store.findToolCall(key);
+      if (current?.status === 'completed') return { result: current.result! };
+      if (Date.now() >= deadline) throw new ToolCallInProgressError(key);
+      const leaseLeft = current?.leaseUntil ? Date.parse(current.leaseUntil) - Date.now() : 0;
+      await sleep(Math.min(Math.max(leaseLeft + 10, 50), 1_000, Math.max(deadline - Date.now(), 1)));
+    }
   }
 }

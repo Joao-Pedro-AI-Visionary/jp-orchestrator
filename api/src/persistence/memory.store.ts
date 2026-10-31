@@ -2,7 +2,7 @@ import {
   Approval, InboxEntry, OutboxEvent, Snapshot, Subtask, Task, ToolCall, Usage,
 } from '../common/types';
 import { nowIso, round6 } from '../common/util';
-import { Store } from './store.port';
+import { Store, ToolClaim } from './store.port';
 
 const clone = <T>(v: T): T => structuredClone(v);
 
@@ -100,12 +100,33 @@ export class MemoryStore implements Store {
     return c ? clone(c) : null;
   }
 
-  async saveToolCallWithOutbox(call: ToolCall, event: OutboxEvent) {
-    const existing = this.toolCalls.get(call.idempotencyKey);
-    if (existing) return clone(existing);
-    this.toolCalls.set(call.idempotencyKey, clone(call));
-    this.outbox.set(event.id, clone(event));
-    return clone(call);
+  async claimToolCall(claim: ToolClaim, leaseMs: number) {
+    const now = Date.now();
+    const leaseUntil = new Date(now + leaseMs).toISOString();
+    const existing = this.toolCalls.get(claim.idempotencyKey);
+    if (!existing) {
+      const call: ToolCall = { ...clone(claim), status: 'started', result: null, attempts: 1, leaseUntil, completedAt: null };
+      this.toolCalls.set(call.idempotencyKey, call);
+      return clone(call);
+    }
+    if (existing.status !== 'started' || (existing.leaseUntil && Date.parse(existing.leaseUntil) > now)) return null;
+    Object.assign(existing, { attempts: existing.attempts + 1, leaseUntil });
+    return clone(existing);
+  }
+
+  async completeToolCallWithOutbox(key: string, attempt: number, result: Record<string, unknown>, event: OutboxEvent) {
+    const c = this.toolCalls.get(key);
+    if (!c) throw new Error(`Chamada de ferramenta ${key} não encontrada`);
+    if (c.status === 'started' && c.attempts === attempt) {
+      Object.assign(c, { status: 'completed', result: clone(result), leaseUntil: null, completedAt: nowIso() });
+      this.outbox.set(event.id, clone(event));
+    }
+    return clone(c);
+  }
+
+  async releaseToolCall(key: string, attempt: number) {
+    const c = this.toolCalls.get(key);
+    if (c && c.status === 'started' && c.attempts === attempt) c.leaseUntil = nowIso();
   }
 
   async claimOutbox(limit: number, leaseMs: number) {
@@ -153,7 +174,9 @@ export class MemoryStore implements Store {
   }
 
   async addInbox(e: InboxEntry) {
+    if (e.eventId && this.inbox.some((x) => x.eventId === e.eventId)) return false;
     this.inbox.unshift(clone(e));
+    return true;
   }
 
   async listInbox(limit: number) {

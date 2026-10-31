@@ -7,6 +7,8 @@ import { createHmac, timingSafeEqual } from 'node:crypto';
  * tolerance window are rejected even with a valid signature.
  */
 export const SIGNATURE_HEADER = 'x-jp-signature';
+/** Stable across redeliveries of one event; the receiver's dedupe key. */
+export const EVENT_ID_HEADER = 'x-jp-event-id';
 
 export function sign(secret: string, body: string, timestamp = Math.floor(Date.now() / 1000)): string {
   const mac = createHmac('sha256', secret).update(`${timestamp}.${body}`).digest('hex');

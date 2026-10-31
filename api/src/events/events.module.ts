@@ -5,7 +5,7 @@ import { newId, nowIso } from '../common/util';
 import { Store } from '../persistence/store.port';
 import { EventBus } from './event-bus';
 import { OutboxRelay } from './outbox-relay.service';
-import { SIGNATURE_HEADER, verify } from './signer';
+import { EVENT_ID_HEADER, SIGNATURE_HEADER, verify } from './signer';
 
 interface RawRequest { rawBody?: Buffer; headers: Record<string, string | string[] | undefined> }
 
@@ -22,7 +22,12 @@ export class EventsController {
   }
 }
 
-/** Demo receiver for signed events: verifies the HMAC over the raw body and stores the delivery. */
+/**
+ * Demo receiver for signed events: verifies the HMAC over the raw body and stores the delivery.
+ * Idempotent: the relay is at-least-once, so a redelivery (same X-JP-Event-Id) answers 200
+ * with duplicate=true and is not stored again. Only a verified event whose header matches the
+ * signed body id is deduped, so an unsigned request cannot shadow a real event id.
+ */
 @Controller('webhooks')
 export class WebhooksController {
   constructor(@Inject(STORE) private readonly store: Store, private readonly relay: OutboxRelay) {}
@@ -35,11 +40,13 @@ export class WebhooksController {
     const verified = verify(this.relay.secret, raw, signature);
     let payload: Record<string, unknown> = {};
     try { payload = JSON.parse(raw); } catch { payload = { raw }; }
-    await this.store.addInbox({
-      id: newId(), event: String(payload.type ?? req.headers['x-jp-event'] ?? 'unknown'),
+    const headerId = req.headers[EVENT_ID_HEADER];
+    const eventId = verified && typeof headerId === 'string' && headerId === payload.id ? headerId : null;
+    const stored = await this.store.addInbox({
+      id: newId(), eventId, event: String(payload.type ?? req.headers['x-jp-event'] ?? 'unknown'),
       verified, signature, payload, receivedAt: nowIso(),
     });
-    return { received: true, verified };
+    return { received: true, verified, duplicate: !stored };
   }
 
   @Get('inbox')

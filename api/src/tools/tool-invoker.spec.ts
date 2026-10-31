@@ -1,9 +1,33 @@
 import { MemoryStore } from '../persistence/memory.store';
 import { StrategyRegistry } from '../strategy/strategy-registry';
+import { crashOn, ProcessCrash } from '../test-utils/crash';
 import { BUILTIN_TOOLS } from './builtin-tools';
-import { ToolInvoker } from './tool-invoker.service';
+import { outboxEvent, ToolContext, ToolHandler, ToolInvoker } from './tool-invoker.service';
+
+/** Fake external API that honors Idempotency-Key, like a payment provider. */
+class PaymentsApi {
+  calls: string[] = [];
+  charges = new Map<string, number>();
+  charge(idempotencyKey: string, amount: number) {
+    this.calls.push(idempotencyKey);
+    if (!this.charges.has(idempotencyKey)) this.charges.set(idempotencyKey, amount);
+    return { chargeId: `ch_${idempotencyKey.slice(0, 8)}`, amount: this.charges.get(idempotencyKey)! };
+  }
+}
+
+class ChargeTool implements ToolHandler {
+  readonly key = 'charge';
+  contexts: ToolContext[] = [];
+  constructor(private readonly api: PaymentsApi) {}
+  async execute(args: Record<string, unknown>, ctx: ToolContext) {
+    this.contexts.push(ctx);
+    return this.api.charge(ctx.idempotencyKey, Number(args.amount));
+  }
+}
 
 describe('ToolInvoker', () => {
+  afterEach(() => jest.useRealTimers());
+
   const setup = () => {
     const store = new MemoryStore();
     return { store, invoker: new ToolInvoker(store, new StrategyRegistry('tool', BUILTIN_TOOLS)) };
@@ -21,6 +45,7 @@ describe('ToolInvoker', () => {
     const outbox = await store.listOutbox();
     expect(outbox).toHaveLength(1);
     expect(outbox[0].type).toBe('tool.executed');
+    expect(await store.findToolCall(first.key)).toMatchObject({ status: 'completed', attempts: 1, leaseUntil: null });
   });
 
   it('honors an explicit Idempotency-Key', async () => {
@@ -29,5 +54,108 @@ describe('ToolInvoker', () => {
     const again = await invoker.invoke({ ...inv, args: { path: 'b.ts' }, idempotencyKey: 'k1' });
     expect(again.replay).toBe(true);
     expect(again.result.path).toBe('a.ts');
+  });
+
+  it('persists a started row with a lease before the handler runs and passes the idempotency key to it', async () => {
+    const store = new MemoryStore();
+    const seen: { row: unknown; ctx: ToolContext }[] = [];
+    const probe: ToolHandler = {
+      key: 'probe',
+      async execute(_args, ctx) {
+        seen.push({ row: await store.findToolCall(ctx.idempotencyKey), ctx });
+        return { ok: true };
+      },
+    };
+    const invoker = new ToolInvoker(store, new StrategyRegistry('tool', [probe]));
+    const { key } = await invoker.invoke({ taskId: 't1', subtaskId: null, tool: 'probe', args: {}, idempotencyKey: 'k-probe' });
+    expect(key).toBe('k-probe');
+    expect(seen).toHaveLength(1);
+    expect(seen[0].ctx).toEqual({ idempotencyKey: 'k-probe', attempt: 1 });
+    expect(seen[0].row).toMatchObject({ status: 'started', result: null, attempts: 1 });
+    expect((seen[0].row as { leaseUntil: string }).leaseUntil).toEqual(expect.any(String));
+  });
+
+  it('releases the lease when the handler fails, so a retry runs right away', async () => {
+    const store = new MemoryStore();
+    let fail = true;
+    const flaky: ToolHandler = {
+      key: 'flaky',
+      async execute(_args, ctx) {
+        if (fail) { fail = false; throw new Error('upstream 503'); }
+        return { attempt: ctx.attempt };
+      },
+    };
+    const invoker = new ToolInvoker(store, new StrategyRegistry('tool', [flaky]));
+    const call = { taskId: 't1', subtaskId: null, tool: 'flaky', args: {} };
+    await expect(invoker.invoke(call)).rejects.toThrow('upstream 503');
+    expect((await invoker.invoke(call)).result).toEqual({ attempt: 2 });
+    expect(await store.listOutbox()).toHaveLength(1);
+  });
+
+  it('crash between the side effect and the commit: retry after the lease reconciles with the same key and the charge is applied once', async () => {
+    jest.useFakeTimers({ now: new Date('2026-10-31T12:00:00Z') });
+    const db = new MemoryStore();
+    const api = new PaymentsApi();
+    const tool = new ChargeTool(api);
+    const registry = new StrategyRegistry('tool', [tool]);
+    const call = { taskId: 't1', subtaskId: 's1', tool: 'charge', args: { amount: 42 } };
+
+    // Process A: the charge goes through, then the process dies before the result is committed.
+    await expect(new ToolInvoker(crashOn(db, 'completeToolCallWithOutbox'), registry).invoke(call)).rejects.toBeInstanceOf(ProcessCrash);
+    const key = ToolInvoker.keyFor(call);
+    expect(api.charges.size).toBe(1);
+    expect(await db.findToolCall(key)).toMatchObject({ status: 'started', attempts: 1, result: null });
+    expect(await db.listOutbox()).toHaveLength(0);
+
+    // Process B (e.g. boot resume) retries while A's lease is still live: it waits instead of failing the task,
+    // and the handler does not run until the lease expires.
+    const invokerB = new ToolInvoker(db, registry);
+    const retry = invokerB.invoke(call);
+    await jest.advanceTimersByTimeAsync(9_000);
+    expect(api.calls).toHaveLength(1);
+
+    // Lease expires: B takes over and re-runs the handler with the same idempotency key.
+    await jest.advanceTimersByTimeAsync(1_100);
+    const recovered = await retry;
+    expect(recovered).toEqual({ result: { chargeId: `ch_${key.slice(0, 8)}`, amount: 42 }, replay: false, key });
+    expect(tool.contexts).toEqual([{ idempotencyKey: key, attempt: 1 }, { idempotencyKey: key, attempt: 2 }]);
+    expect(api.calls).toEqual([key, key]);
+    expect(api.charges.size).toBe(1);
+    expect(await db.findToolCall(key)).toMatchObject({ status: 'completed', attempts: 2 });
+    expect(await db.listOutbox()).toHaveLength(1);
+
+    // Any later retry is a pure replay.
+    expect((await new ToolInvoker(db, registry).invoke(call)).replay).toBe(true);
+    expect(api.calls).toHaveLength(2);
+  });
+
+  it('a handler slower than the lease times out and keeps its lease, so no other worker overlaps it', async () => {
+    jest.useFakeTimers({ now: new Date('2026-10-31T12:00:00Z') });
+    const store = new MemoryStore();
+    const hang: ToolHandler = { key: 'hang', execute: () => new Promise(() => undefined) };
+    const invoker = new ToolInvoker(store, new StrategyRegistry('tool', [hang]));
+    const call = invoker.invoke({ taskId: 't1', subtaskId: null, tool: 'hang', args: {}, idempotencyKey: 'k-hang' });
+    const failed = expect(call).rejects.toThrow('ferramenta hang excedeu o timeout');
+    await jest.advanceTimersByTimeAsync(10_000);
+    await failed;
+    const row = await store.findToolCall('k-hang');
+    expect(row).toMatchObject({ status: 'started', attempts: 1 });
+    expect(Date.parse(row!.leaseUntil!)).toBeLessThanOrEqual(Date.now());
+  });
+
+  it('crash takeover race: a stale attempt finishing after the takeover cannot commit a second result or event', async () => {
+    jest.useFakeTimers({ now: new Date('2026-10-31T12:00:00Z') });
+    const db = new MemoryStore();
+    const claim = { idempotencyKey: 'k', taskId: 't1', subtaskId: null, tool: 'x', args: {}, createdAt: new Date().toISOString() };
+    const stale = await db.claimToolCall(claim, 1000);
+    expect(await db.claimToolCall(claim, 1000)).toBeNull();
+    jest.setSystemTime(Date.now() + 1001);
+    const fresh = await db.claimToolCall(claim, 1000);
+    expect(fresh?.attempts).toBe(2);
+
+    await db.completeToolCallWithOutbox('k', fresh!.attempts, { by: 'fresh' }, outboxEvent('tool.executed', {}));
+    const late = await db.completeToolCallWithOutbox('k', stale!.attempts, { by: 'stale' }, outboxEvent('tool.executed', {}));
+    expect(late).toMatchObject({ status: 'completed', attempts: 2, result: { by: 'fresh' } });
+    expect(await db.listOutbox()).toHaveLength(1);
   });
 });

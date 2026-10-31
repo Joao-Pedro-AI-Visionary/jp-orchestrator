@@ -45,7 +45,8 @@ interface Approval { taskId: string; status: 'pending' | 'approved' | 'rejected'
 | GET | /gateway/models | | `{ id, provider, tier: 'cheap'\|'balanced'\|'premium', inputPer1k, outputPer1k, healthy }[]` |
 | POST | /gateway/models/:id/toggle | | modelo atualizado (simula queda, força fallback) |
 | GET | /gateway/stats | | `{ requests, cacheHits, fallbacks, rejectedTokenLimit, budgetBlocks }` |
-| GET | /webhooks/inbox | | `{ id, event, verified, signature, receivedAt, payload }[]` |
+| POST | /webhooks/inbox | corpo bruto assinado; headers `X-JP-Signature`, `X-JP-Event`, `X-JP-Event-Id`, `Idempotency-Key` | 200 `{ received: true, verified: bool, duplicate: bool }` (reentrega do mesmo `X-JP-Event-Id` verificado: `duplicate: true`, não grava de novo) |
+| GET | /webhooks/inbox | | `{ id, eventId, event, verified, signature, receivedAt, payload }[]` |
 | GET | /events | SSE | cada mensagem `data: { type, taskId, payload, at }` |
 
 Tipos de evento SSE: `task.created`, `task.status`, `subtask.status`, `gateway.call`
@@ -56,4 +57,5 @@ Tipos de evento SSE: `task.created`, `task.status`, `subtask.status`, `gateway.c
 
 plan -> dispatch (subagentes em paralelo) -> review/correção (máx. 2 rodadas) ->
 [aprovação humana, se `requiresApproval`] -> merge -> `completed` + evento `task.completed`
-assinado (HMAC) entregue via outbox ao webhook.
+assinado (HMAC) entregue via outbox ao webhook. Entrega at-least-once: o receptor deduplica por `X-JP-Event-Id`
+(igual ao `Idempotency-Key`), ver "Garantias de entrega" no README.

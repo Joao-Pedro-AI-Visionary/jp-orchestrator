@@ -1,15 +1,15 @@
 {
   "name": "@jp-orchestrator/api",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "private": true,
   "license": "MIT",
   "scripts": {
-    "build": "tsc -p tsconfig.build.json && cp src/persistence/schema.sql dist/persistence/",
+    "build": "tsc -p tsconfig.build.json && cp src/persistence/schema.sql dist/persistence/ && cp -r src/persistence/migrations dist/persistence/",
     "start": "node dist/main.js",
     "dev": "tsc -p tsconfig.build.json && node dist/main.js",
     "lint": "eslint src",
     "typecheck": "tsc --noEmit",
-    "test": "jest"
+    "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js"
   },
   "dependencies": {
     "@nestjs/common": "11.2.8",
@@ -21,6 +21,7 @@
     "rxjs": "7.8.2"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "0.5.14",
     "@eslint/js": "9.39.5",
     "@nestjs/testing": "11.2.8",
     "@types/jest": "30.0.0",

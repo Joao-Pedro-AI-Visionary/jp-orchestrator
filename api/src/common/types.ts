@@ -69,14 +69,23 @@ export interface Approval {
   resolvedAt: string | null;
 }
 
+/**
+ * A tool call row. 'started' is written (with a lease) before the handler runs;
+ * 'completed' holds the result. attempts is the fencing token: only the holder
+ * of the current attempt may complete or release the call.
+ */
 export interface ToolCall {
   idempotencyKey: string;
   taskId: string;
   subtaskId: string | null;
   tool: string;
   args: Record<string, unknown>;
-  result: Record<string, unknown>;
+  status: 'started' | 'completed';
+  result: Record<string, unknown> | null;
+  attempts: number;
+  leaseUntil: string | null;
   createdAt: string;
+  completedAt: string | null;
 }
 
 export interface OutboxEvent {
@@ -93,6 +102,8 @@ export interface OutboxEvent {
 
 export interface InboxEntry {
   id: string;
+  /** Sender event id (X-JP-Event-Id). Unique: a redelivery of the same event is not stored twice. */
+  eventId: string | null;
   event: string;
   verified: boolean;
   signature: string;
