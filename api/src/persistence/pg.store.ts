@@ -1,10 +1,10 @@
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { Pool, PoolClient } from 'pg';
 import {
   Approval, InboxEntry, OutboxEvent, Snapshot, Subtask, Task, ToolCall, Usage,
 } from '../common/types';
-import { Store } from './store.port';
+import { Store, ToolClaim } from './store.port';
 
 type Row = Record<string, unknown>;
 const iso = (v: unknown): string | null => (v ? new Date(v as string).toISOString() : null);
@@ -53,6 +53,20 @@ const toOutbox = (r: Row): OutboxEvent => ({
   lastError: (r.last_error as string) ?? null,
 });
 
+const toToolCall = (r: Row): ToolCall => ({
+  idempotencyKey: r.idempotency_key as string,
+  taskId: r.task_id as string,
+  subtaskId: (r.subtask_id as string) ?? null,
+  tool: r.tool as string,
+  args: r.args as Record<string, unknown>,
+  status: r.status as ToolCall['status'],
+  result: (r.result as Record<string, unknown>) ?? null,
+  attempts: num(r.attempts),
+  leaseUntil: iso(r.lease_until),
+  createdAt: iso(r.created_at)!,
+  completedAt: iso(r.completed_at),
+});
+
 const toUsage = (r: Row): Usage => ({
   id: r.id as string,
   taskId: r.task_id as string,
@@ -95,7 +109,26 @@ export class PgStore implements Store {
   static async connect(url: string): Promise<PgStore> {
     const pool = new Pool({ connectionString: url, max: 10 });
     await pool.query(readFileSync(join(__dirname, 'schema.sql'), 'utf8'));
-    return new PgStore(pool);
+    const store = new PgStore(pool);
+    await store.migrate(join(__dirname, 'migrations'));
+    return store;
+  }
+
+  /** Applies migrations/*.sql in name order, once each. The advisory lock serializes concurrent boots. */
+  async migrate(dir: string): Promise<string[]> {
+    const files = readdirSync(dir).filter((f) => f.endsWith('.sql')).sort();
+    return this.tx(async (c) => {
+      await c.query('SELECT pg_advisory_xact_lock(7262001)');
+      await c.query('CREATE TABLE IF NOT EXISTS schema_migrations (version text PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())');
+      const done = new Set((await c.query('SELECT version FROM schema_migrations')).rows.map((r) => r.version as string));
+      const applied: string[] = [];
+      for (const f of files.filter((x) => !done.has(x))) {
+        await c.query(readFileSync(join(dir, f), 'utf8'));
+        await c.query('INSERT INTO schema_migrations (version) VALUES ($1)', [f]);
+        applied.push(f);
+      }
+      return applied;
+    });
   }
 
   async close() { await this.pool.end(); }
@@ -230,24 +263,43 @@ export class PgStore implements Store {
 
   async findToolCall(key: string) {
     const r = await this.pool.query('SELECT * FROM tool_calls WHERE idempotency_key = $1', [key]);
-    const row = r.rows[0];
-    return row ? {
-      idempotencyKey: row.idempotency_key, taskId: row.task_id, subtaskId: row.subtask_id,
-      tool: row.tool, args: row.args, result: row.result, createdAt: iso(row.created_at)!,
-    } : null;
+    return r.rows[0] ? toToolCall(r.rows[0]) : null;
   }
 
-  async saveToolCallWithOutbox(call: ToolCall, e: OutboxEvent) {
-    const inserted = await this.tx(async (c) => {
+  async claimToolCall(call: ToolClaim, leaseMs: number) {
+    const r = await this.pool.query(
+      `INSERT INTO tool_calls (idempotency_key, task_id, subtask_id, tool, args, status, attempts, lease_until, created_at)
+       VALUES ($1,$2,$3,$4,$5,'started',1, now() + ($6 || ' milliseconds')::interval, $7)
+       ON CONFLICT (idempotency_key) DO UPDATE
+         SET attempts = tool_calls.attempts + 1, lease_until = EXCLUDED.lease_until
+         WHERE tool_calls.status = 'started' AND (tool_calls.lease_until IS NULL OR tool_calls.lease_until <= now())
+       RETURNING *`,
+      [call.idempotencyKey, call.taskId, call.subtaskId, call.tool, JSON.stringify(call.args), String(leaseMs), call.createdAt],
+    );
+    return r.rows[0] ? toToolCall(r.rows[0]) : null;
+  }
+
+  async completeToolCallWithOutbox(key: string, attempt: number, result: Record<string, unknown>, e: OutboxEvent) {
+    const won = await this.tx(async (c) => {
       const r = await c.query(
-        `INSERT INTO tool_calls (idempotency_key, task_id, subtask_id, tool, args, result, created_at)
-         VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT DO NOTHING RETURNING idempotency_key`,
-        [call.idempotencyKey, call.taskId, call.subtaskId, call.tool, JSON.stringify(call.args), JSON.stringify(call.result), call.createdAt],
+        `UPDATE tool_calls SET status = 'completed', result = $3, lease_until = NULL, completed_at = now()
+         WHERE idempotency_key = $1 AND status = 'started' AND attempts = $2 RETURNING *`,
+        [key, attempt, JSON.stringify(result)],
       );
-      if (r.rowCount) await this.insertOutbox(c, e);
-      return Boolean(r.rowCount);
+      if (r.rows[0]) await this.insertOutbox(c, e);
+      return r.rows[0] ? toToolCall(r.rows[0]) : null;
     });
-    return inserted ? call : (await this.findToolCall(call.idempotencyKey))!;
+    if (won) return won;
+    const current = await this.findToolCall(key);
+    if (!current) throw new Error(`Chamada de ferramenta ${key} não encontrada`);
+    return current;
+  }
+
+  async releaseToolCall(key: string, attempt: number) {
+    await this.pool.query(
+      `UPDATE tool_calls SET lease_until = now() WHERE idempotency_key = $1 AND status = 'started' AND attempts = $2`,
+      [key, attempt],
+    );
   }
 
   async claimOutbox(limit: number, leaseMs: number) {
@@ -310,16 +362,18 @@ export class PgStore implements Store {
   }
 
   async addInbox(e: InboxEntry) {
-    await this.pool.query(
-      'INSERT INTO webhook_inbox (id, event, verified, signature, payload, received_at) VALUES ($1,$2,$3,$4,$5,$6)',
-      [e.id, e.event, e.verified, e.signature, JSON.stringify(e.payload), e.receivedAt],
+    const r = await this.pool.query(
+      `INSERT INTO webhook_inbox (id, event_id, event, verified, signature, payload, received_at) VALUES ($1,$2,$3,$4,$5,$6,$7)
+       ON CONFLICT (event_id) DO NOTHING`,
+      [e.id, e.eventId, e.event, e.verified, e.signature, JSON.stringify(e.payload), e.receivedAt],
     );
+    return r.rowCount === 1;
   }
 
   async listInbox(limit: number) {
     const r = await this.pool.query('SELECT * FROM webhook_inbox ORDER BY received_at DESC LIMIT $1', [limit]);
     return r.rows.map((row) => ({
-      id: row.id, event: row.event, verified: row.verified, signature: row.signature,
+      id: row.id, eventId: row.event_id ?? null, event: row.event, verified: row.verified, signature: row.signature,
       payload: row.payload, receivedAt: iso(row.received_at)!,
     }));
   }

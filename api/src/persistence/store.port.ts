@@ -2,6 +2,8 @@ import {
   Approval, InboxEntry, OutboxEvent, Snapshot, Subtask, Task, ToolCall, Usage,
 } from '../common/types';
 
+export type ToolClaim = Pick<ToolCall, 'idempotencyKey' | 'taskId' | 'subtaskId' | 'tool' | 'args' | 'createdAt'>;
+
 /**
  * Persistence port. PgStore is the production adapter; MemoryStore backs unit
  * tests and local runs without Postgres. Methods that must be atomic say so.
@@ -29,8 +31,20 @@ export interface Store {
   getApproval(taskId: string): Promise<Approval | null>;
 
   findToolCall(idempotencyKey: string): Promise<ToolCall | null>;
-  /** Atomic: stores the tool result and its outbox event together (transactional outbox). */
-  saveToolCallWithOutbox(call: ToolCall, event: OutboxEvent): Promise<ToolCall>;
+  /**
+   * Atomic: inserts a 'started' row holding a lease, or takes over a 'started'
+   * row whose lease expired (attempts + 1). Returns the claimed row, or null when
+   * the key is completed or still leased by another worker (read it with findToolCall).
+   */
+  claimToolCall(call: ToolClaim, leaseMs: number): Promise<ToolCall | null>;
+  /**
+   * Atomic: marks the call completed and enqueues its outbox event in one
+   * transaction, only if `attempt` still holds the claim. Returns the stored row
+   * (the winner's row when the claim was lost).
+   */
+  completeToolCallWithOutbox(key: string, attempt: number, result: Record<string, unknown>, event: OutboxEvent): Promise<ToolCall>;
+  /** Ends the lease of a failed attempt so a retry can claim the call right away. */
+  releaseToolCall(key: string, attempt: number): Promise<void>;
 
   /** Claims due events (SKIP LOCKED in Postgres) so concurrent relays never double send. */
   claimOutbox(limit: number, leaseMs: number): Promise<OutboxEvent[]>;
@@ -44,6 +58,7 @@ export interface Store {
   addSnapshot(snapshot: Snapshot): Promise<Snapshot>;
   listSnapshots(taskId: string): Promise<Snapshot[]>;
 
-  addInbox(entry: InboxEntry): Promise<void>;
+  /** Idempotent on eventId (UNIQUE + ON CONFLICT DO NOTHING). Returns false when the event was already stored. */
+  addInbox(entry: InboxEntry): Promise<boolean>;
   listInbox(limit: number): Promise<InboxEntry[]>;
 }

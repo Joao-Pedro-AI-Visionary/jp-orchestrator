@@ -3,7 +3,7 @@ import { HTTP_POST, STORE } from '../common/tokens';
 import { envNumber, nowIso, withTimeout } from '../common/util';
 import { Store } from '../persistence/store.port';
 import { EventBus } from './event-bus';
-import { sign } from './signer';
+import { EVENT_ID_HEADER, sign } from './signer';
 
 export type HttpPost = (url: string, body: string, headers: Record<string, string>) => Promise<{ status: number }>;
 
@@ -17,7 +17,9 @@ export const fetchPost: HttpPost = async (url, body, headers) => {
  * Objective: deliver every outbox event to the webhook, signed with HMAC.
  * Exit: event delivered (2xx) or dead after OUTBOX_MAX_ATTEMPTS.
  * Timeout: OUTBOX_TIMEOUT_MS per delivery. Backoff: 2^attempts seconds.
- * At-least-once: receivers dedupe by X-JP-Event-Id.
+ * At-least-once: a crash after the POST and before the 'delivered' mark, or a
+ * delivery slower than the 30s lease, resends the same event. Every send carries
+ * the same X-JP-Event-Id and Idempotency-Key (the event id); receivers dedupe on it.
  */
 @Injectable()
 export class OutboxRelay implements OnModuleInit, OnModuleDestroy {
@@ -56,7 +58,8 @@ export class OutboxRelay implements OnModuleInit, OnModuleDestroy {
           const res = await withTimeout(this.post(this.url, body, {
             'x-jp-signature': sign(this.secret, body),
             'x-jp-event': ev.type,
-            'x-jp-event-id': ev.id,
+            [EVENT_ID_HEADER]: ev.id,
+            'idempotency-key': ev.id,
           }), this.timeoutMs, 'webhook');
           if (res.status < 200 || res.status >= 300) throw new Error(`HTTP ${res.status}`);
           await this.store.updateOutbox(ev.id, { status: 'delivered', attempts: ev.attempts + 1, deliveredAt: nowIso(), lastError: null });
