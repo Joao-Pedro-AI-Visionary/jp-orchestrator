@@ -125,10 +125,11 @@ function build(f, png) {
   // enquadramento por formato
   if (f.source === 'mobile') parts.push(`[raw]scale=${f.W}:${f.H}:flags=lanczos,${norm}[base]`);
   else if (f.framed) {
-    const vh = Math.round((f.W * 9) / 16 / 2) * 2;
-    parts.push(`[raw]scale=${f.W - 60}:-2:flags=lanczos[vid]`);
+    const vw = f.W - 60;
+    const vh = Math.round((vw * 9) / 16 / 2) * 2;
+    parts.push(`[raw]scale=${vw}:${vh}:flags=lanczos[vid]`);
     parts.push(`[${frameIdx}:v]loop=-1:1,trim=duration=${contentDur.toFixed(3)},${norm}[fr]`);
-    parts.push(`[fr][vid]overlay=30:${Math.round((f.H - vh) / 2) + 30}:shortest=1,${norm}[base]`);
+    parts.push(`[fr][vid]overlay=30:${Math.round((f.H - vh) / 2)}:shortest=1,${norm}[base]`);
   } else parts.push(`[raw]scale=${f.W}:${f.H}:flags=lanczos,${norm}[base]`);
 
   let cur = 'base';

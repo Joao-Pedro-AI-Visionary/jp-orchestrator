@@ -23,35 +23,38 @@ export function WebhooksPanel({ d }: { d: Dashboard }) {
         ) : d.webhooks.length === 0 && !d.errors.webhooks ? (
           <EmptyState testId="webhooks-empty" text="Nenhum webhook recebido ainda. Conclua uma tarefa para gerar o primeiro." />
         ) : (
-          <ul className="scroll-area max-h-[420px] space-y-2" data-testid="webhooks-list">
-            <AnimatePresence initial={false}>
-              {d.webhooks.map((w) => (
-                <motion.li
-                  key={w.id}
-                  layout
-                  initial={{ opacity: 0, y: 8 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  data-testid="webhook-item"
-                  data-verified={String(w.verified)}
-                  className="rounded-xl border border-white/10 bg-white/[0.03] p-3"
-                >
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <span className="text-sm font-semibold text-white">{w.event}</span>
-                    <span
-                      data-testid="webhook-badge"
-                      className={`inline-flex items-center gap-1 rounded-full border border-white/10 px-2.5 py-1 text-xs font-semibold ${w.verified ? "bg-emerald-400/10 text-emerald-300" : "bg-rose-400/10 text-rose-300"}`}
-                    >
-                      {w.verified ? <ShieldCheck className="size-3.5" aria-hidden="true" /> : <ShieldAlert className="size-3.5" aria-hidden="true" />}
-                      {w.verified ? "assinatura válida" : "assinatura inválida"}
-                    </span>
-                  </div>
-                  <p className="mt-1 truncate text-xs text-slate-400">
-                    <code className="font-mono">{w.signature}</code> · {time(w.receivedAt)}
-                  </p>
-                </motion.li>
-              ))}
-            </AnimatePresence>
-          </ul>
+          <div className="scroll-area" role="region" aria-label="Webhooks recebidos, lista rolável" tabIndex={0}>
+            {/* focável: a lista rola sem itens interativos dentro, e o teclado precisa alcançá-la */}
+            <ul className="space-y-2" data-testid="webhooks-list">
+              <AnimatePresence initial={false}>
+                {d.webhooks.map((w) => (
+                  <motion.li
+                    key={w.id}
+                    layout
+                    initial={{ opacity: 0, y: 8 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    data-testid="webhook-item"
+                    data-verified={String(w.verified)}
+                    className="rounded-xl border border-white/10 bg-white/[0.03] p-3"
+                  >
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <span className="text-sm font-semibold text-white">{w.event}</span>
+                      <span
+                        data-testid="webhook-badge"
+                        className={`inline-flex items-center gap-1 rounded-full border border-white/10 px-2.5 py-1 text-xs font-semibold ${w.verified ? "bg-emerald-400/10 text-emerald-300" : "bg-rose-400/10 text-rose-300"}`}
+                      >
+                        {w.verified ? <ShieldCheck className="size-3.5" aria-hidden="true" /> : <ShieldAlert className="size-3.5" aria-hidden="true" />}
+                        {w.verified ? "assinatura válida" : "assinatura inválida"}
+                      </span>
+                    </div>
+                    <p className="mt-1 truncate text-xs text-slate-400">
+                      <code className="font-mono">{w.signature}</code> · {time(w.receivedAt)}
+                    </p>
+                  </motion.li>
+                ))}
+              </AnimatePresence>
+            </ul>
+          </div>
         )}
       </div>
     </section>

@@ -190,24 +190,28 @@ test('fluxo completo do dashboard: todos os botões executam ações reais', asy
 
 test('botão "Tentar de novo" recupera a lista após falha de rede', async ({ page }) => {
   // Falha só a primeira leitura de /tasks no navegador; o clique em "Tentar de novo" volta à API real.
-  let failed = 0;
+  // O SSE fica bloqueado: assim nenhum evento recarrega a lista sozinho e só o clique pode limpar o erro.
+  await page.route(`${API}/events`, (route) => route.abort());
+  let gets = 0;
   await page.route(`${API}/tasks`, (route) => {
-    if (route.request().method() === 'GET' && failed === 0) {
-      failed++;
-      return route.abort('connectionrefused');
-    }
-    return route.continue();
+    if (route.request().method() !== 'GET') return route.continue();
+    gets++;
+    return gets === 1 ? route.abort('connectionrefused') : route.continue();
   });
   await page.goto('/');
   const error = page.getByTestId('tasks-error');
   await expect(error).toBeVisible();
   await page.screenshot({ path: `${SHOTS}/08-erro-tentar-de-novo.png` });
-  await error.getByTestId('retry-button').click();
+  expect(gets).toBe(1);
+  await Promise.all([
+    page.waitForRequest((r) => r.url() === `${API}/tasks` && r.method() === 'GET'),
+    error.getByTestId('retry-button').click(),
+  ]);
   await expect(error).toBeHidden();
+  expect(gets).toBe(2);
   const total = (await api<unknown[]>('/tasks')).length;
   if (total > 0) await expect(page.getByTestId('task-card').first()).toBeVisible();
   else await expect(page.getByTestId('tasks-empty')).toBeVisible();
-  expect(failed).toBe(1);
 });
 
 test('Idempotency-Key no POST /tasks devolve a mesma tarefa', async () => {
@@ -230,11 +234,14 @@ test('acessibilidade básica: landmarks, região aria-live e movimento reduzido'
   await expect(page.getByTestId('live-region')).toHaveAttribute('aria-live', /polite|assertive/);
   // regressão: colunas do grid sem min-w-0 alargavam a página no celular
   await expect(page.getByTestId('model-item').first()).toBeVisible();
-  const { scroll, client } = await page.evaluate(() => ({
-    scroll: document.documentElement.scrollWidth,
-    client: document.documentElement.clientWidth,
-  }));
-  expect(scroll, 'sem rolagem horizontal no celular').toBeLessThanOrEqual(client);
+  await expect(page.getByTestId('task-card').or(page.getByTestId('tasks-empty')).first()).toBeVisible();
+  await expect(page.getByTestId('billing-task-table').or(page.getByTestId('billing-tasks-empty')).first()).toBeVisible();
+  await expect(page.getByTestId('webhooks-list').or(page.getByTestId('webhooks-empty')).first()).toBeVisible();
+  await expect
+    .poll(() => page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth), {
+      message: 'sem rolagem horizontal no celular',
+    })
+    .toBeLessThanOrEqual(0);
   await page.screenshot({ path: `${SHOTS}/07-mobile-reduced-motion.png`, fullPage: true });
   await ctx.close();
 });

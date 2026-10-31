@@ -76,7 +76,7 @@ export function BillingPanel({ d }: { d: Dashboard }) {
                 <EmptyState testId="billing-tasks-empty" text="Nenhuma tarefa faturada ainda." />
               </div>
             ) : (
-              <div className="scroll-area mt-2 max-h-[420px] overflow-x-auto">
+              <div className="scroll-area mt-2 overflow-x-auto">
                 <table className="w-full text-left text-sm" data-testid="billing-task-table">
                   <caption className="sr-only">Custo por tarefa</caption>
                   <thead className="sticky top-0 bg-[#0d0f1a] text-xs text-slate-400">

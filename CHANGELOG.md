@@ -6,9 +6,9 @@ Formato baseado em Keep a Changelog. Versionamento semântico.
 
 ### Alterado
 - UI refinada a partir de shots populares do Dribbble para dashboards de agentes de IA e dev tools
-  (AI Agent Analytics, AI Voice Agent Dashboard, OPERATE, Montseract): topbar fixa translúcida,
+  (AI Agent Analytics, AI Voice Agent Dashboard, OPERATE, Montseract): topbar translúcida fixa no desktop,
   rótulos de seção (eyebrow), KPIs com faixa de destaque, fundo pontilhado sutil.
-- Listas longas (tarefas, webhooks, faturamento por tarefa) rolam dentro do próprio card, com cabeçalho
+- No desktop, listas longas (tarefas, webhooks, faturamento por tarefa) rolam dentro do próprio card, com cabeçalho
   fixo na tabela: a página desktop caiu de ~7.900 px para ~4.100 px de altura.
 - Botão de erro passou a "Tentar de novo", com ícone e `data-testid="retry-button"`.
 

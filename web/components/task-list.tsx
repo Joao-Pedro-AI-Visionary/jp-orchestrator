@@ -27,9 +27,11 @@ export function TaskList({ d }: { d: Dashboard }) {
   return (
     <section aria-labelledby="tasks-title" className="card p-5" data-testid="task-list">
       <SectionTitle id="tasks-title" eyebrow="Fila" title="Tarefas">
-        <span className="text-xs tabular-nums text-slate-400" data-testid="tasks-count">
-          {visible.length} de {d.tasks.length}
-        </span>
+        {!d.loading.tasks && (
+          <span className="text-xs tabular-nums text-slate-400" data-testid="tasks-count">
+            {visible.length} de {d.tasks.length}
+          </span>
+        )}
       </SectionTitle>
       <div role="group" aria-label="Filtrar tarefas" className="mt-3 flex flex-wrap gap-2">
         {FILTERS.map((f) => (
@@ -55,7 +57,7 @@ export function TaskList({ d }: { d: Dashboard }) {
         ) : visible.length === 0 && !d.errors.tasks ? (
           <EmptyState testId="tasks-empty" text={d.tasks.length === 0 ? "Nenhuma tarefa ainda. Crie a primeira acima." : "Nenhuma tarefa neste filtro."} />
         ) : (
-          <ul className="scroll-area max-h-[560px] space-y-3" aria-label="Lista de tarefas">
+          <ul className="scroll-area space-y-3" style={{ ["--scroll-max" as string]: "560px" }} aria-label="Lista de tarefas">
             <AnimatePresence initial={false}>
               {visible.map((t) => {
                 const tone = TASK_STATUS[t.status];
