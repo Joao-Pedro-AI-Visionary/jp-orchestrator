@@ -2,7 +2,7 @@ import { MemoryStore } from '../persistence/memory.store';
 import { StrategyRegistry } from '../strategy/strategy-registry';
 import { crashOn, ProcessCrash } from '../test-utils/crash';
 import { BUILTIN_TOOLS } from './builtin-tools';
-import { outboxEvent, ToolContext, ToolHandler, ToolInvoker } from './tool-invoker.service';
+import { outboxEvent, ToolCallRefusedError, ToolContext, ToolHandler, ToolInvoker } from './tool-invoker.service';
 
 /** Fake external API that honors Idempotency-Key, like a payment provider. */
 class PaymentsApi {
@@ -127,6 +127,43 @@ describe('ToolInvoker', () => {
     // Any later retry is a pure replay.
     expect((await new ToolInvoker(db, registry).invoke(call)).replay).toBe(true);
     expect(api.calls).toHaveLength(2);
+  });
+
+  it('caps lease takeovers at TOOL_MAX_ATTEMPTS and refuses to run the handler again', async () => {
+    jest.useFakeTimers({ now: new Date('2026-10-31T12:00:00Z') });
+    const db = new MemoryStore();
+    const tool = new ChargeTool(new PaymentsApi());
+    const registry = new StrategyRegistry('tool', [tool]);
+    const call = { taskId: 't1', subtaskId: 's1', tool: 'charge', args: { amount: 42 } };
+
+    // Three processes each crash after the effect: attempts 1, 2 and 3 all run the handler.
+    for (let i = 0; i < 3; i++) {
+      await expect(new ToolInvoker(crashOn(db, 'completeToolCallWithOutbox'), registry).invoke(call)).rejects.toBeInstanceOf(ProcessCrash);
+      jest.setSystemTime(Date.now() + 10_001);
+    }
+    expect(tool.contexts.map((c) => c.attempt)).toEqual([1, 2, 3]);
+
+    // The fourth takeover is refused before the handler runs.
+    const refused = new ToolInvoker(db, registry).invoke(call);
+    await expect(refused).rejects.toBeInstanceOf(ToolCallRefusedError);
+    await expect(refused).rejects.toThrow(/TOOL_MAX_ATTEMPTS \(3\)/);
+    expect(tool.contexts).toHaveLength(3);
+    expect(await db.findToolCall(ToolInvoker.keyFor(call))).toMatchObject({ status: 'started', result: null });
+    expect(await db.listOutbox()).toHaveLength(0);
+  });
+
+  it('refuses to re-run a started call older than IDEMPOTENCY_KEY_TTL_MS', async () => {
+    jest.useFakeTimers({ now: new Date('2026-10-31T12:00:00Z') });
+    const db = new MemoryStore();
+    const tool = new ChargeTool(new PaymentsApi());
+    const registry = new StrategyRegistry('tool', [tool]);
+    const call = { taskId: 't1', subtaskId: 's1', tool: 'charge', args: { amount: 42 } };
+    await expect(new ToolInvoker(crashOn(db, 'completeToolCallWithOutbox'), registry).invoke(call)).rejects.toBeInstanceOf(ProcessCrash);
+
+    jest.setSystemTime(Date.now() + 86_400_001);
+    await expect(new ToolInvoker(db, registry).invoke(call)).rejects.toThrow(/IDEMPOTENCY_KEY_TTL_MS \(86400000ms\)/);
+    expect(tool.contexts).toHaveLength(1);
+    expect(await db.listOutbox()).toHaveLength(0);
   });
 
   it('a handler slower than the lease times out and keeps its lease, so no other worker overlaps it', async () => {

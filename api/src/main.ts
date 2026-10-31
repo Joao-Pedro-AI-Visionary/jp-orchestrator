@@ -2,9 +2,12 @@ import 'reflect-metadata';
 import { Logger } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
+import { assertRetryHorizon, retryConfig } from './common/retry-horizon';
 import { Orchestrator } from './orchestration/orchestrator.service';
 
 async function bootstrap() {
+  // Fail fast: no redelivery or tool retry may outlive the idempotency key.
+  assertRetryHorizon(retryConfig());
   const app = await NestFactory.create(AppModule, { rawBody: true });
   const origin = process.env.CORS_ORIGIN ? process.env.CORS_ORIGIN.split(',') : true;
   app.enableCors({ origin, exposedHeaders: ['Idempotent-Replay'] });
