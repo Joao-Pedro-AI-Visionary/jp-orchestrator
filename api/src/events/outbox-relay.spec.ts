@@ -46,6 +46,21 @@ describe('OutboxRelay', () => {
     expect(stored.lastError).toBe('HTTP 500');
   });
 
+  it('an event older than OUTBOX_MAX_AGE_MS goes dead as expired without being sent', async () => {
+    jest.useFakeTimers({ now: new Date('2026-10-31T12:00:00Z') });
+    const store = new MemoryStore();
+    const sent: string[] = [];
+    const relay = new OutboxRelay(store, new EventBus(), async (_u, body) => { sent.push(body); return { status: 200 }; });
+    await enqueue(store);
+
+    jest.setSystemTime(Date.now() + 600_001);
+    expect(await relay.tick()).toBe(0);
+    expect(sent).toHaveLength(0);
+    expect((await store.listOutbox())[0]).toMatchObject({ status: 'dead', attempts: 0, lastError: 'expired', deliveredAt: null });
+    expect(await relay.tick()).toBe(0);
+    expect(sent).toHaveLength(0);
+  });
+
   it('crash between webhook 2xx and the delivered mark: redelivery after the lease keeps the same ids and the receiver stores the event once', async () => {
     jest.useFakeTimers({ now: new Date('2026-10-31T12:00:00Z') });
     const db = new MemoryStore();

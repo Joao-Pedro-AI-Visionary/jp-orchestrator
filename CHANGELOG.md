@@ -2,6 +2,26 @@
 
 Formato baseado em Keep a Changelog. Versionamento semântico.
 
+## [Unreleased]
+
+### Corrigido
+- Reentregas e retries agora têm horizonte imposto dentro do TTL da chave de idempotência (antes só implícito):
+  o boot falha (`assertRetryHorizon`) se o pior caso do outbox (soma dos backoffs + tentativas × (timeout + lease)),
+  o das ferramentas (tentativas × lease) ou `OUTBOX_MAX_AGE_MS` for >= `IDEMPOTENCY_KEY_TTL_MS`, ou se algum valor
+  não for inteiro positivo.
+- `OutboxRelay`: evento mais antigo que `OUTBOX_MAX_AGE_MS` vira `dead` com `last_error = 'expired'` e não é enviado.
+- `ToolInvoker`: takeovers de lease limitados a `TOOL_MAX_ATTEMPTS`; chamada `started` criada há mais de
+  `IDEMPOTENCY_KEY_TTL_MS` não é reexecutada. Os dois casos lançam `ToolCallRefusedError` sem rodar o handler.
+
+### Adicionado
+- Variáveis `IDEMPOTENCY_KEY_TTL_MS` (padrão 86400000 = 24 h), `OUTBOX_MAX_AGE_MS` (600000 = 10 min),
+  `OUTBOX_CLAIM_LEASE_MS` (30000, antes fixo no código) e `TOOL_MAX_ATTEMPTS` (3).
+- `api/src/common/retry-horizon.ts`: `retryConfig`, `outboxHorizonMs`, `toolHorizonMs` e `assertRetryHorizon` (puras, testadas).
+
+### Testes
+- `retry-horizon.spec.ts` (cálculo e validação), evento expirado sem chamada HTTP, teto de `TOOL_MAX_ATTEMPTS`,
+  recusa após o TTL e `created_at` preservado no takeover (PGlite).
+
 ## [0.3.2] - 2026-10-31
 
 ### Corrigido

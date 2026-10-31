@@ -52,9 +52,11 @@ describe('PgStore (PGlite)', () => {
     expect(await store.claimToolCall(claim, 60_000)).toBeNull();
 
     const other = { ...claim, idempotencyKey: 'k2' };
-    await store.claimToolCall(other, 60_000);
+    const createdAt = '2026-10-30T12:00:00.000Z';
+    await store.claimToolCall({ ...other, createdAt }, 60_000);
     await ctx.db.exec(`UPDATE tool_calls SET lease_until = NULL WHERE idempotency_key = 'k2'`);
-    expect((await store.claimToolCall(other, 60_000))?.attempts).toBe(2);
+    // A takeover keeps the first created_at: ToolInvoker refuses re-runs past IDEMPOTENCY_KEY_TTL_MS from it.
+    expect(await store.claimToolCall(other, 60_000)).toMatchObject({ attempts: 2, createdAt });
     await store.releaseToolCall('k2', 2);
     expect((await store.claimToolCall(other, 60_000))?.attempts).toBe(3);
   });

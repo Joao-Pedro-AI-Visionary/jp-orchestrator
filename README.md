@@ -88,7 +88,7 @@ Todo loop é limitado. Nada repete "até passar". Limites configuráveis por var
 | correction | Revisor aprova ou devolve feedback; coders corrigem | revisão aprovada; falha após 2 rodadas | `REVIEW_TIMEOUT_MS` (30 s) | máximo 2 rodadas de correção |
 | approval | Pausa durável até decisão humana | approved ou rejected | sem timeout (pausa persistida) | 0 chamadas de modelo |
 | merge | Consolidar saídas e artefatos | resultado único sem duplicatas | `MERGE_TIMEOUT_MS` (10 s) | 0 chamadas de modelo |
-| outbox | Entregar eventos assinados | 2xx, ou morto após `OUTBOX_MAX_ATTEMPTS` | `OUTBOX_TIMEOUT_MS` (5 s) por entrega | 5 tentativas, backoff 2^n s |
+| outbox | Entregar eventos assinados | 2xx, ou morto após `OUTBOX_MAX_ATTEMPTS`, ou `expired` após `OUTBOX_MAX_AGE_MS` | `OUTBOX_TIMEOUT_MS` (5 s) por entrega | 5 tentativas, backoff 2^n s, idade máxima 10 min |
 
 Ondas do dispatch: pesquisadores primeiro (alimentam a memória compartilhada), depois coders e
 testers em paralelo, depois o revisor.
@@ -104,7 +104,7 @@ testers em paralelo, depois o revisor.
 ### Garantias de entrega
 
 - **Webhooks (outbox → receptor): at-least-once + dedupe no receptor.** O evento nasce na mesma transação do
-  estado que o gerou. O `OutboxRelay` reivindica o evento com um lease de 30 s (`FOR UPDATE SKIP LOCKED`) e só
+  estado que o gerou. O `OutboxRelay` reivindica o evento com um lease de 30 s (`OUTBOX_CLAIM_LEASE_MS`, `FOR UPDATE SKIP LOCKED`) e só
   marca `delivered` depois do 2xx. Se o processo morrer entre o 2xx e essa marca, ou a entrega passar de 30 s, o
   evento é reenviado. Todo envio do mesmo evento leva os mesmos `X-JP-Event-Id` e `Idempotency-Key` (= id do
   evento), com assinatura nova. O receptor deduplica por esse id: `webhook_inbox.event_id` é `UNIQUE` e o insert
@@ -118,6 +118,18 @@ testers em paralelo, depois o revisor.
   lease vencer, no máximo um lease, e reconcilia rodando o handler de novo com a mesma chave. Por isso, ferramenta com
   efeito externo **precisa** repassar `ctx.idempotencyKey` ao sistema de destino: o handler pode rodar mais de uma vez,
   e é o destino que aplica o efeito uma vez só. Sem isso não existe exactly-once.
+- **Horizonte de retry dentro do TTL da chave (verificado no boot).** O receptor e o destino só deduplicam enquanto
+  lembram da chave (`IDEMPOTENCY_KEY_TTL_MS`, padrão 24 h). Uma reentrega depois disso aplicaria o efeito de novo, então:
+  - o relay marca `dead` com `last_error = 'expired'`, sem enviar, todo evento mais antigo que `OUTBOX_MAX_AGE_MS`
+    (padrão 10 min), checado antes de cada envio;
+  - o `ToolInvoker` limita os takeovers de lease a `TOOL_MAX_ATTEMPTS` (padrão 3) e recusa reexecutar uma chamada
+    `started` criada há mais de `IDEMPOTENCY_KEY_TTL_MS`; nos dois casos lança `ToolCallRefusedError` sem rodar o handler;
+  - o boot falha (`assertRetryHorizon`, `api/src/common/retry-horizon.ts`) se o pior caso do outbox
+    (soma dos backoffs + tentativas × (`OUTBOX_TIMEOUT_MS` + `OUTBOX_CLAIM_LEASE_MS`), 205 s no padrão), o das
+    ferramentas (`TOOL_MAX_ATTEMPTS` × `TOOL_LEASE_MS`, 30 s) ou `OUTBOX_MAX_AGE_MS` for >= `IDEMPOTENCY_KEY_TTL_MS`,
+    ou se algum desses valores não for inteiro positivo.
+  Configure `IDEMPOTENCY_KEY_TTL_MS` com o menor TTL de chave entre os receptores e destinos reais. `webhook_inbox`
+  e `tool_calls` ainda não são podados, então o receptor de demonstração lembra da chave para sempre.
 - Os testes com `crash` no nome simulam a morte do processo nesses dois pontos (`outbox-relay.spec.ts`, `tool-invoker.spec.ts`).
 - Migrações SQL em `api/src/persistence/migrations/`, aplicadas no boot uma vez cada (tabela `schema_migrations`).
   O SQL do `PgStore` e as migrações são testados num Postgres real em WASM (PGlite) em `pg.store.spec.ts`.
@@ -200,7 +212,7 @@ This version ships a deterministic `MockProvider`; real providers plug in as ano
 ### Delivery guarantees
 
 - **Webhooks (outbox → receiver): at-least-once delivery + receiver dedupe.** Events are written in the same
-  transaction as the state change. The relay claims an event with a 30s lease and marks it `delivered` only after a
+  transaction as the state change. The relay claims an event with a 30s lease (`OUTBOX_CLAIM_LEASE_MS`) and marks it `delivered` only after a
   2xx, so a crash between the 2xx and the mark (or a delivery slower than the lease) resends it. Every send of one
   event carries the same `X-JP-Event-Id` and `Idempotency-Key` (the event id). Receivers must dedupe on it; the demo
   receiver does so with a `UNIQUE` `webhook_inbox.event_id` and `ON CONFLICT DO NOTHING`, answering 200 with
@@ -211,6 +223,14 @@ This version ships a deterministic `MockProvider`; real providers plug in as ano
   commit together, fenced by the attempt. After a crash between the effect and the commit, the retry (including the
   boot resume) waits up to one lease, then re-runs the handler with the same key. The handler may run more than
   once, so tools with external side effects must forward `ctx.idempotencyKey` and let the downstream apply it once.
+- **Retry horizon inside the key TTL (checked at boot).** Receivers and downstreams only dedupe while they remember
+  the key (`IDEMPOTENCY_KEY_TTL_MS`, default 24h). The relay marks events older than `OUTBOX_MAX_AGE_MS` (default
+  10 min) `dead` with `last_error = 'expired'` without sending them; the `ToolInvoker` caps lease takeovers at
+  `TOOL_MAX_ATTEMPTS` (default 3) and refuses to re-run a `started` call created more than the key TTL ago
+  (`ToolCallRefusedError`, handler not run). Startup fails (`assertRetryHorizon`) if the outbox worst case (sum of
+  backoffs + attempts × (`OUTBOX_TIMEOUT_MS` + `OUTBOX_CLAIM_LEASE_MS`), 205s by default), the tool worst case
+  (`TOOL_MAX_ATTEMPTS` × `TOOL_LEASE_MS`, 30s) or `OUTBOX_MAX_AGE_MS` is >= the key TTL. Set the TTL to the smallest
+  key retention among your real receivers and downstreams.
 - Tests with `crash` in their name kill the process at both points; they assert the same ids/key are reused and
   that a receiver or downstream honoring the key applies the effect once.
 
