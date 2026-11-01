@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, API_URL } from "./api";
+import { api, downloadBillingCsv, EVENTS_URL } from "./api";
 import type {
   BillingSummary,
   GatewayCall,
@@ -142,7 +142,7 @@ export function useDashboard() {
         }, 200),
       );
     };
-    const es = new EventSource(`${API_URL}/events`);
+    const es = new EventSource(EVENTS_URL);
     es.onopen = () => setLive(true);
     es.onerror = () => setLive(false);
     es.onmessage = (msg) => {
@@ -252,6 +252,14 @@ export function useDashboard() {
     [withPending],
   );
 
+  const exportCsv = useCallback(async () => {
+    try {
+      await downloadBillingCsv();
+    } catch (err) {
+      pushToast("error", errMsg(err));
+    }
+  }, [pushToast]);
+
   const detail = detailState && detailState.id === selectedId ? detailState.data : null;
 
   return {
@@ -278,6 +286,7 @@ export function useDashboard() {
     createTask,
     taskAction,
     toggleModel,
+    exportCsv,
   };
 }
 

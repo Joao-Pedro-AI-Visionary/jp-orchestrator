@@ -4,7 +4,28 @@ Formato baseado em Keep a Changelog. Versionamento semântico.
 
 ## [Unreleased]
 
+### Segurança
+- API exige `API_KEY` em todas as rotas (`x-api-key` ou `Authorization: Bearer`; no SSE `/events` também
+  `?api_key=`), exceto `GET /health` e `POST /webhooks/inbox`. O boot falha sem chave ou com chave curta.
+- Rate limit por IP (todas as rotas e, mais apertado, `POST /tasks`), com `429` e `Retry-After`.
+- Bind em `HOST` (padrão `127.0.0.1`; a imagem Docker usa `0.0.0.0`) e compose publicando API e web só em `127.0.0.1`.
+- CORS com allowlist de `CORS_ORIGIN` (obrigatório em produção, sem `*`); antes refletia qualquer origem.
+- `WEBHOOK_SECRET` sem fallback público: em produção o boot falha se ausente, igual ao exemplo ou curto (< 32);
+  fora de produção usa um segredo aleatório por processo. O compose exige a variável.
+- `multer` fixado em 2.5.0 via `overrides` (GHSA-q7qp-rjg7-q26m).
+- Dashboard e scripts enviam a chave (`NEXT_PUBLIC_API_KEY` / `API_KEY`); o CSV é baixado via `fetch` com header.
+
 ### Corrigido
+- Timeout da tarefa aborta o loop de verdade (`AbortSignal` propagado a planner, subagentes, gateway e provedor) e a
+  guarda só é liberada quando o loop para. O estado final só é gravado se a tarefa ainda não for terminal
+  (`finishTask`), então cada tarefa emite um único evento terminal.
+- Execução por tarefa protegida por lease no banco (`tasks.lease_owner`/`lease_until`, renovado por heartbeat):
+  duas réplicas não rodam a mesma tarefa, `resumeActive` só retoma as tarefas cujo lease conseguiu e
+  `POST /tasks/:id/resume` considera o lease de qualquer réplica. Lease perdido aborta a execução sem evento terminal.
+- `putStep` do journal é first-writer-wins: quem perde a corrida usa o valor já gravado, não o próprio.
+- Cache semântico com escopo `tenant:tarefa:agente:tier`; antes uma tarefa podia receber a resposta de outra.
+- Orçamento com reserva atômica (`tasks.reserved_usd`) antes de cada chamada e de cada fallback, liquidada pelo custo
+  real; antes subagentes paralelos passavam todos pelo guard e estouravam o limite.
 - Reentregas e retries agora têm horizonte imposto dentro do TTL da chave de idempotência (antes só implícito):
   o boot falha (`assertRetryHorizon`) se o pior caso do outbox (soma dos backoffs + tentativas × (timeout + lease)),
   o das ferramentas (tentativas × lease) ou `OUTBOX_MAX_AGE_MS` for >= `IDEMPOTENCY_KEY_TTL_MS`, ou se algum valor

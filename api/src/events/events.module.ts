@@ -6,6 +6,7 @@ import { Store } from '../persistence/store.port';
 import { EventBus } from './event-bus';
 import { OutboxRelay } from './outbox-relay.service';
 import { EVENT_ID_HEADER, SIGNATURE_HEADER, verify } from './signer';
+import { AllowQueryApiKey, Public } from '../security/security.guards';
 
 interface RawRequest { rawBody?: Buffer; headers: Record<string, string | string[] | undefined> }
 
@@ -14,6 +15,7 @@ export class EventsController {
   constructor(private readonly bus: EventBus) {}
 
   /** Live stream for the dashboard. Heartbeat keeps proxies from closing the connection. */
+  @AllowQueryApiKey()
   @Sse('events')
   events(): Observable<MessageEvent> {
     const live = this.bus.stream().pipe(map((e) => ({ data: e })));
@@ -32,6 +34,8 @@ export class EventsController {
 export class WebhooksController {
   constructor(@Inject(STORE) private readonly store: Store, private readonly relay: OutboxRelay) {}
 
+  /** Public: authenticated by the HMAC signature, not by the API key. */
+  @Public()
   @Post('inbox')
   @HttpCode(200)
   async receive(@Req() req: RawRequest) {

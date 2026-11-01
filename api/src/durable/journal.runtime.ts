@@ -16,8 +16,10 @@ export class JournalRuntime implements DurableRuntime {
         if (done) return done.value as T;
         this.executedSteps++;
         const value = await fn();
-        await this.store.putStep(executionId, stepName, value ?? null);
-        return value;
+        // First writer wins: if a concurrent runner journaled this step first, adopt its value
+        // so both continue from the same state (e.g. the same planned subtask ids).
+        const stored = await this.store.putStep(executionId, stepName, value ?? null);
+        return (stored.inserted ? value : stored.value) as T;
       },
     };
   }

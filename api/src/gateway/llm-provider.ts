@@ -6,7 +6,8 @@ export interface Completion { text: string; completionTokens: number }
 
 /** Strategy for the provider axis: one implementation per vendor (mock, openai-compatible, ...). */
 export interface LlmProvider extends KeyedStrategy {
-  complete(model: ModelSpec, prompt: string, maxOutputTokens: number): Promise<Completion>;
+  /** Must stop (reject with signal.reason) when `signal` aborts. */
+  complete(model: ModelSpec, prompt: string, maxOutputTokens: number, signal?: AbortSignal): Promise<Completion>;
 }
 
 export class ProviderUnavailableError extends Error {
@@ -25,10 +26,11 @@ export class MockProvider implements LlmProvider {
 
   constructor(private readonly latencyMs = envNumber('MOCK_LATENCY_MS', 0)) {}
 
-  async complete(model: ModelSpec, prompt: string, maxOutputTokens: number): Promise<Completion> {
+  async complete(model: ModelSpec, prompt: string, maxOutputTokens: number, signal?: AbortSignal): Promise<Completion> {
+    signal?.throwIfAborted();
     if (this.latencyMs > 0) {
       const jitter = parseInt(sha256(prompt).slice(0, 4), 16) % Math.max(1, this.latencyMs);
-      await sleep(this.latencyMs + jitter);
+      await sleep(this.latencyMs + jitter, signal);
     }
     if (!model.healthy) throw new ProviderUnavailableError(model.id);
     const focus = prompt.split('\n').find((l) => l.startsWith('TAREFA:'))?.slice(7).trim() ?? 'tarefa';

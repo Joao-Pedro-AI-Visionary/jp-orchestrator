@@ -1,5 +1,5 @@
 import { Subtask, Task } from '../common/types';
-import { envNumber, nowIso, withTimeout } from '../common/util';
+import { envNumber, nowIso, withDeadline } from '../common/util';
 import { AgentResult, AgentStrategy } from '../agents/agent-strategy';
 import { BudgetExceededError } from '../billing/billing.service';
 import { EventBus } from '../events/event-bus';
@@ -10,12 +10,13 @@ import { StrategyRegistry } from '../strategy/strategy-registry';
 import { ToolInvoker } from '../tools/tool-invoker.service';
 import { LoopSpec } from './loops';
 
-export interface DispatchOptions { attempt: number; feedback: string | null }
+export interface DispatchOptions { attempt: number; feedback: string | null; signal?: AbortSignal }
 
 /**
  * Dispatch loop: runs one wave of subtasks in parallel through a bounded
  * worker pool (MAX_PARALLEL). Each subagent has its own timeout and one
- * retry. A budget cut cancels whatever has not started and stops the wave.
+ * retry. A budget cut or an aborted task signal cancels whatever has not
+ * started and stops the wave.
  */
 export class Dispatcher {
   readonly maxParallel = envNumber('MAX_PARALLEL', 4);
@@ -58,18 +59,18 @@ export class Dispatcher {
     const agent = this.agents.resolve(subtask.agent);
     let lastError: Error | null = null;
     for (let call = 1; call <= this.spec.maxCalls; call++) {
+      opts.signal?.throwIfAborted();
       await this.setStatus(subtask, { status: 'running', attempt: opts.attempt, startedAt: nowIso(), finishedAt: null });
       try {
-        const res = await withTimeout(
+        const res = await withDeadline((signal) =>
           agent.run({ task, subtask: { ...subtask, attempt: opts.attempt }, attempt: opts.attempt, feedback: opts.feedback,
-            gateway: this.gateway, tools: this.tools, memory: this.memory }),
-          this.spec.timeoutMs, `subagente ${subtask.agent}`,
-        );
+            gateway: this.gateway, tools: this.tools, memory: this.memory, signal }),
+        this.spec.timeoutMs, `subagente ${subtask.agent}`, opts.signal);
         await this.setStatus(subtask, { status: 'done', model: res.model, output: res.output, finishedAt: nowIso() });
         return res;
       } catch (err) {
         lastError = err as Error;
-        const fatal = err instanceof BudgetExceededError;
+        const fatal = err instanceof BudgetExceededError || Boolean(opts.signal?.aborted);
         await this.setStatus(subtask, {
           status: fatal ? 'cancelled' : 'failed', output: lastError.message, finishedAt: nowIso(),
         });

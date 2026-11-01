@@ -2,6 +2,8 @@ import { expect, Page, test } from '@playwright/test';
 import { readFileSync } from 'node:fs';
 
 const API = process.env.API_URL ?? 'http://localhost:3001';
+/** Same key the API (API_KEY) and the dashboard build (NEXT_PUBLIC_API_KEY) use. */
+const AUTH = { 'x-api-key': process.env.API_KEY ?? '' };
 const SHOTS = 'docs/screenshots';
 
 interface TaskDetail {
@@ -12,7 +14,7 @@ interface TaskDetail {
 }
 
 const api = async <T>(path: string, init?: RequestInit): Promise<T> => {
-  const res = await fetch(`${API}${path}`, init);
+  const res = await fetch(`${API}${path}`, { ...init, headers: { ...AUTH, ...(init?.headers ?? {}) } });
   expect(res.ok, `${path} -> HTTP ${res.status}`).toBeTruthy();
   return res.json() as Promise<T>;
 };
@@ -199,7 +201,7 @@ test('fluxo completo do dashboard: todos os botões executam ações reais', asy
 test('botão "Tentar de novo" recupera a lista após falha de rede', async ({ page }) => {
   // Falha só a primeira leitura de /tasks no navegador; o clique em "Tentar de novo" volta à API real.
   // O SSE fica bloqueado: assim nenhum evento recarrega a lista sozinho e só o clique pode limpar o erro.
-  await page.route(`${API}/events`, (route) => route.abort());
+  await page.route(`${API}/events*`, (route) => route.abort());
   let gets = 0;
   await page.route(`${API}/tasks`, (route) => {
     if (route.request().method() !== 'GET') return route.continue();
@@ -224,7 +226,7 @@ test('botão "Tentar de novo" recupera a lista após falha de rede', async ({ pa
 
 test('Idempotency-Key no POST /tasks devolve a mesma tarefa', async () => {
   const body = JSON.stringify({ title: `Idempotente ${stamp()}`, description: 'Implementar algo' });
-  const headers = { 'content-type': 'application/json', 'Idempotency-Key': `e2e-${stamp()}` };
+  const headers = { ...AUTH, 'content-type': 'application/json', 'Idempotency-Key': `e2e-${stamp()}` };
   const a = await fetch(`${API}/tasks`, { method: 'POST', headers, body });
   const b = await fetch(`${API}/tasks`, { method: 'POST', headers, body });
   expect(a.status).toBe(201);

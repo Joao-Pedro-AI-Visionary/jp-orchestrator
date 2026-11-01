@@ -13,12 +13,17 @@ export class BudgetExceededError extends Error {
 
 export type UsageInput = Omit<Usage, 'id' | 'createdAt'>;
 
+/** Rounds a cost estimate up to the 6 decimals stored, so a reservation never undershoots. */
+const ceil6 = (n: number): number => Math.ceil(n * 1e6 - 1e-6) / 1e6;
+
 interface Bucket { tokens: number; costUsd: number; calls: number }
 
 /**
  * Billing ledger: every gateway call becomes a usage record (tokens and cost by
- * task, subagent and model). The budget guard runs before each call and blocks
- * the call that would cross the task budget (automatic cut).
+ * task, subagent and model). Before each call the gateway reserves the estimated
+ * cost atomically (spent + reserved + estimate <= budget), so parallel subagents of
+ * one task cannot all pass the check and overspend; the call that would cross the
+ * budget is blocked (automatic cut). The reservation is settled with the real cost.
  */
 @Injectable()
 export class BillingService {
@@ -26,21 +31,28 @@ export class BillingService {
 
   constructor(@Inject(STORE) private readonly store: Store, private readonly bus: EventBus) {}
 
-  async assertBudget(taskId: string, estimatedUsd: number): Promise<void> {
-    const task = await this.store.getTask(taskId);
-    if (!task) return;
-    if (task.spentUsd + estimatedUsd > task.budgetUsd) {
+  /** Reserves the estimate or throws BudgetExceededError. Returns the reserved amount. */
+  async reserve(taskId: string, estimatedUsd: number): Promise<number> {
+    const amount = ceil6(estimatedUsd);
+    const r = await this.store.reserveBudget(taskId, amount);
+    if (!r.ok) {
       this.budgetBlocks++;
-      throw new BudgetExceededError(taskId, task.spentUsd, task.budgetUsd);
+      throw new BudgetExceededError(taskId, r.spentUsd, r.budgetUsd);
     }
+    return amount;
   }
 
-  async record(input: UsageInput): Promise<number> {
+  release(taskId: string, reservedUsd: number): Promise<void> {
+    return this.store.releaseBudget(taskId, reservedUsd);
+  }
+
+  /** Records usage; `reservedUsd` (from reserve) is settled in the same transaction. */
+  async record(input: UsageInput, reservedUsd = 0): Promise<number> {
     const usage: Usage = {
       ...input, id: newId(), createdAt: nowIso(),
       costUsd: round6(input.costUsd), savedUsd: round6(input.savedUsd),
     };
-    const spent = await this.store.recordUsage(usage);
+    const spent = await this.store.recordUsage(usage, reservedUsd);
     this.bus.emit('usage.recorded', usage.taskId, { ...usage, spentUsd: spent });
     return spent;
   }

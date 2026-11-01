@@ -3,7 +3,6 @@
 import { motion } from "motion/react";
 import { Download } from "lucide-react";
 import type { Dashboard } from "@/lib/use-dashboard";
-import { CSV_URL } from "@/lib/api";
 import { TASK_STATUS } from "@/lib/status";
 import { int, usd } from "@/lib/format";
 import { EmptyState, ErrorNote, Pill, Skeleton } from "./ui";
@@ -49,10 +48,10 @@ export function BillingPanel({ d }: { d: Dashboard }) {
             Faturamento
           </h2>
         </div>
-        <a href={CSV_URL} download data-testid="export-csv" className="btn" aria-label="Exportar relatório de faturamento em CSV">
+        <button type="button" onClick={() => void d.exportCsv()} data-testid="export-csv" className="btn" aria-label="Exportar relatório de faturamento em CSV">
           <Download className="size-4" aria-hidden="true" />
           Exportar CSV
-        </a>
+        </button>
       </div>
       {d.errors.billing && (
         <div className="mt-3">

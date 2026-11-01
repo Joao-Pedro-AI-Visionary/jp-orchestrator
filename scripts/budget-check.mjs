@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // Verifica consumo de orçamento por tarefa. Sai com código 1 se alguma tarefa
 // passou do limite de alerta (padrão 80%) ou foi cortada por orçamento.
+// Requer API_KEY no ambiente (a mesma da API).
 // Uso: node scripts/budget-check.mjs [--api http://localhost:3001] [--warn 0.8] [--max-total 1.00]
 const arg = (name, fallback) => {
   const i = process.argv.indexOf(`--${name}`);
@@ -10,7 +11,7 @@ const api = arg('api', process.env.API_URL ?? 'http://localhost:3001');
 const warn = Number(arg('warn', '0.8'));
 const maxTotal = arg('max-total', null);
 
-const res = await fetch(`${api}/billing/summary`);
+const res = await fetch(`${api}/billing/summary`, { headers: { 'x-api-key': process.env.API_KEY ?? '' } });
 if (!res.ok) {
   console.error(`Falha ao ler ${api}/billing/summary: HTTP ${res.status}`);
   process.exit(2);

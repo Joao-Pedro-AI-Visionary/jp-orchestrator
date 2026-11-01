@@ -29,10 +29,13 @@ services:
       DATABASE_URL: postgres://jp:jp@postgres:5432/orchestrator
       REDIS_URL: redis://redis:6379
       WEBHOOK_URL: http://api:3001/webhooks/inbox
-      WEBHOOK_SECRET: ${WEBHOOK_SECRET:-dev-secret-change-me}
+      WEBHOOK_SECRET: ${WEBHOOK_SECRET:?defina WEBHOOK_SECRET (openssl rand -hex 32)}
+      API_KEY: ${API_KEY:?defina API_KEY (openssl rand -hex 32)}
+      CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:3000}
       MOCK_LATENCY_MS: ${MOCK_LATENCY_MS:-700}
       MAX_PARALLEL: 4
-    ports: ["3001:3001"]
+    # Published on the host loopback only.
+    ports: ["127.0.0.1:3001:3001"]
     depends_on:
       postgres: { condition: service_healthy }
       redis: { condition: service_healthy }
@@ -46,7 +49,9 @@ services:
       context: ./web
       args:
         NEXT_PUBLIC_API_URL: http://localhost:3001
-    ports: ["3000:3000"]
+        # Demo only: inlined in the browser bundle.
+        NEXT_PUBLIC_API_KEY: ${API_KEY:?defina API_KEY (openssl rand -hex 32)}
+    ports: ["127.0.0.1:3000:3000"]
     depends_on:
       api: { condition: service_healthy }
 

@@ -3,6 +3,7 @@ import { HTTP_POST, STORE } from '../common/tokens';
 import { retryConfig } from '../common/retry-horizon';
 import { envNumber, nowIso, withTimeout } from '../common/util';
 import { Store } from '../persistence/store.port';
+import { webhookSecret } from '../security/security.config';
 import { EventBus } from './event-bus';
 import { EVENT_ID_HEADER, sign } from './signer';
 
@@ -30,7 +31,7 @@ export class OutboxRelay implements OnModuleInit, OnModuleDestroy {
   private timer: NodeJS.Timeout | null = null;
   private running = false;
   readonly url = process.env.WEBHOOK_URL ?? 'http://localhost:3001/webhooks/inbox';
-  readonly secret = process.env.WEBHOOK_SECRET ?? 'dev-secret-change-me';
+  readonly secret = webhookSecret();
   private readonly cfg = retryConfig();
 
   constructor(

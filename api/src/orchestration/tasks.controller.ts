@@ -93,7 +93,7 @@ export class TasksController {
   @HttpCode(200)
   async resume(@Param('id') id: string) {
     const task = await this.mustGet(id);
-    const stuck = ['planning', 'running', 'merging', 'queued'].includes(task.status) && !this.orchestrator.isRunning(id);
+    const stuck = ['planning', 'running', 'merging', 'queued'].includes(task.status) && !(await this.orchestrator.isRunningAnywhere(id));
     if (task.status !== 'failed' && !stuck) throw new ConflictException(`Tarefa em ${task.status} não pode ser retomada`);
     const updated = await this.store.updateTask(id, { status: 'running', error: null });
     this.bus.emit('task.status', id, { status: 'running' });

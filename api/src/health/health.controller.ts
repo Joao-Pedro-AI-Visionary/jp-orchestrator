@@ -3,12 +3,15 @@ import type Redis from 'ioredis';
 import { STORE } from '../common/tokens';
 import { REDIS } from '../infrastructure.module';
 import { PgStore } from '../persistence/pg.store';
+import { Public } from '../security/security.guards';
 import { Store } from '../persistence/store.port';
 
 @Controller('health')
 export class HealthController {
   constructor(@Inject(STORE) private readonly store: Store, @Inject(REDIS) private readonly redis: Redis | null) {}
 
+  /** Public: container healthchecks call it without a key. */
+  @Public()
   @Get()
   async health() {
     const postgres = this.store instanceof PgStore && (await this.store.ping());

@@ -5,6 +5,7 @@ import { nowIso, round6 } from '../common/util';
 import { Store, ToolClaim } from './store.port';
 
 const clone = <T>(v: T): T => structuredClone(v);
+const TERMINAL = new Set(['completed', 'failed', 'rejected', 'budget_exceeded']);
 
 /** In-process adapter. Single threaded event loop makes every method atomic. */
 export class MemoryStore implements Store {
@@ -18,6 +19,8 @@ export class MemoryStore implements Store {
   private usage: Usage[] = [];
   private snapshots: Snapshot[] = [];
   private inbox: InboxEntry[] = [];
+  private leases = new Map<string, { owner: string; until: number }>();
+  private reserved = new Map<string, number>();
 
   async ping() { return true; }
 
@@ -58,8 +61,40 @@ export class MemoryStore implements Store {
     return t;
   }
 
+  async finishTask(id: string, patch: Partial<Task>, event: OutboxEvent) {
+    const t = this.tasks.get(id);
+    if (!t) throw new Error(`Tarefa ${id} não encontrada`);
+    if (TERMINAL.has(t.status)) return null;
+    return this.updateTaskWithEvent(id, patch, event);
+  }
+
+  async acquireTaskLease(taskId: string, owner: string, leaseMs: number) {
+    if (!this.tasks.has(taskId)) return false;
+    const now = Date.now();
+    const current = this.leases.get(taskId);
+    if (current && current.until > now && current.owner !== owner) return false;
+    this.leases.set(taskId, { owner, until: now + leaseMs });
+    if (current?.owner !== owner) this.reserved.delete(taskId);
+    return true;
+  }
+
+  async renewTaskLease(taskId: string, owner: string, leaseMs: number) {
+    const current = this.leases.get(taskId);
+    if (!current || current.owner !== owner) return false;
+    current.until = Date.now() + leaseMs;
+    return true;
+  }
+
+  async releaseTaskLease(taskId: string, owner: string) {
+    if (this.leases.get(taskId)?.owner === owner) this.leases.delete(taskId);
+  }
+
+  async isTaskLeased(taskId: string) {
+    return (this.leases.get(taskId)?.until ?? 0) > Date.now();
+  }
+
   async saveSubtasks(list: Subtask[]) {
-    for (const s of list) this.subtasks.set(s.id, clone(s));
+    for (const s of list) if (!this.subtasks.has(s.id)) this.subtasks.set(s.id, clone(s));
   }
 
   async updateSubtask(id: string, patch: Partial<Subtask>) {
@@ -82,7 +117,9 @@ export class MemoryStore implements Store {
 
   async putStep(taskId: string, key: string, value: unknown) {
     const k = `${taskId}:${key}`;
-    if (!this.steps.has(k)) this.steps.set(k, clone(value));
+    if (this.steps.has(k)) return { inserted: false, value: clone(this.steps.get(k)) };
+    this.steps.set(k, clone(value));
+    return { inserted: true, value };
   }
 
   async upsertApproval(a: Approval) {
@@ -148,11 +185,25 @@ export class MemoryStore implements Store {
     return [...this.outbox.values()].map(clone);
   }
 
-  async recordUsage(u: Usage) {
+  async reserveBudget(taskId: string, amountUsd: number) {
+    const t = this.tasks.get(taskId);
+    if (!t) return { ok: true, spentUsd: 0, budgetUsd: Infinity };
+    const reserved = this.reserved.get(taskId) ?? 0;
+    if (round6(t.spentUsd + reserved + amountUsd) > t.budgetUsd) return { ok: false, spentUsd: t.spentUsd, budgetUsd: t.budgetUsd };
+    this.reserved.set(taskId, round6(reserved + amountUsd));
+    return { ok: true, spentUsd: t.spentUsd, budgetUsd: t.budgetUsd };
+  }
+
+  async releaseBudget(taskId: string, amountUsd: number) {
+    this.reserved.set(taskId, Math.max(0, round6((this.reserved.get(taskId) ?? 0) - amountUsd)));
+  }
+
+  async recordUsage(u: Usage, reservedUsd = 0) {
     this.usage.push(clone(u));
     const t = this.tasks.get(u.taskId);
     if (!t) return u.costUsd;
     t.spentUsd = round6(t.spentUsd + u.costUsd);
+    if (reservedUsd) await this.releaseBudget(u.taskId, reservedUsd);
     return t.spentUsd;
   }
 

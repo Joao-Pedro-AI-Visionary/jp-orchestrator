@@ -11,6 +11,7 @@ const iso = (v: unknown): string | null => (v ? new Date(v as string).toISOStrin
 const num = (v: unknown): number => Number(v ?? 0);
 const snake = (k: string): string => k.replace(/[A-Z]/g, (c) => `_${c.toLowerCase()}`);
 const JSON_COLS = new Set(['result', 'payload', 'content', 'args', 'value']);
+const TERMINAL_SQL = "('completed', 'failed', 'rejected', 'budget_exceeded')";
 
 const toTask = (r: Row): Task => ({
   id: r.id as string,
@@ -181,26 +182,66 @@ export class PgStore implements Store {
     return r.rows.map(toTask);
   }
 
-  private async patchTask(c: Pool | PoolClient, id: string, patch: Partial<Task>) {
+  private async patchTask(c: Pool | PoolClient, id: string, patch: Partial<Task>, where = '') {
     const { sql, values } = setClause({ ...patch, createdAt: undefined, updatedAt: undefined });
     const r = await c.query(
-      `UPDATE tasks SET ${sql ? `${sql}, ` : ''}updated_at = now() WHERE id = $1 RETURNING *`,
+      `UPDATE tasks SET ${sql ? `${sql}, ` : ''}updated_at = now() WHERE id = $1 ${where} RETURNING *`,
       [id, ...values],
     );
-    if (!r.rows[0]) throw new Error(`Tarefa ${id} não encontrada`);
+    if (!r.rows[0]) {
+      if (where) return null;
+      throw new Error(`Tarefa ${id} não encontrada`);
+    }
     return toTask(r.rows[0]);
   }
 
-  updateTask(id: string, patch: Partial<Task>) {
-    return this.patchTask(this.pool, id, patch);
+  async updateTask(id: string, patch: Partial<Task>) {
+    return (await this.patchTask(this.pool, id, patch))!;
   }
 
   updateTaskWithEvent(id: string, patch: Partial<Task>, e: OutboxEvent) {
     return this.tx(async (c) => {
-      const t = await this.patchTask(c, id, patch);
+      const t = (await this.patchTask(c, id, patch))!;
       await this.insertOutbox(c, e);
       return t;
     });
+  }
+
+  async finishTask(id: string, patch: Partial<Task>, e: OutboxEvent) {
+    const done = await this.tx(async (c) => {
+      const t = await this.patchTask(c, id, patch, `AND status NOT IN ${TERMINAL_SQL}`);
+      if (t) await this.insertOutbox(c, e);
+      return t;
+    });
+    if (!done && !(await this.getTask(id))) throw new Error(`Tarefa ${id} não encontrada`);
+    return done;
+  }
+
+  async acquireTaskLease(taskId: string, owner: string, leaseMs: number) {
+    const r = await this.pool.query(
+      `UPDATE tasks SET lease_owner = $2, lease_until = now() + ($3 || ' milliseconds')::interval,
+         reserved_usd = CASE WHEN lease_owner = $2 THEN reserved_usd ELSE 0 END
+       WHERE id = $1 AND (lease_until IS NULL OR lease_until <= now() OR lease_owner = $2) RETURNING id`,
+      [taskId, owner, String(leaseMs)],
+    );
+    return r.rows.length === 1;
+  }
+
+  async renewTaskLease(taskId: string, owner: string, leaseMs: number) {
+    const r = await this.pool.query(
+      `UPDATE tasks SET lease_until = now() + ($3 || ' milliseconds')::interval WHERE id = $1 AND lease_owner = $2 RETURNING id`,
+      [taskId, owner, String(leaseMs)],
+    );
+    return r.rows.length === 1;
+  }
+
+  async releaseTaskLease(taskId: string, owner: string) {
+    await this.pool.query('UPDATE tasks SET lease_owner = NULL, lease_until = NULL WHERE id = $1 AND lease_owner = $2', [taskId, owner]);
+  }
+
+  async isTaskLeased(taskId: string) {
+    const r = await this.pool.query('SELECT lease_until > now() AS leased FROM tasks WHERE id = $1', [taskId]);
+    return r.rows[0]?.leased === true;
   }
 
   private insertOutbox(c: PoolClient, e: OutboxEvent) {
@@ -240,10 +281,14 @@ export class PgStore implements Store {
   }
 
   async putStep(taskId: string, key: string, value: unknown) {
-    await this.pool.query(
-      'INSERT INTO step_journal (task_id, step_key, value) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING',
+    // ON CONFLICT waits for a concurrent writer; the follow-up SELECT (new snapshot) sees its row.
+    const ins = await this.pool.query(
+      'INSERT INTO step_journal (task_id, step_key, value) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING RETURNING task_id',
       [taskId, key, JSON.stringify(value ?? null)],
     );
+    if (ins.rows.length) return { inserted: true, value };
+    const stored = await this.getStep(taskId, key);
+    return { inserted: false, value: stored?.value ?? null };
   }
 
   async upsertApproval(a: Approval) {
@@ -323,7 +368,23 @@ export class PgStore implements Store {
     return r.rows.map(toOutbox);
   }
 
-  recordUsage(u: Usage) {
+  async reserveBudget(taskId: string, amountUsd: number) {
+    const r = await this.pool.query(
+      `UPDATE tasks SET reserved_usd = reserved_usd + $2
+       WHERE id = $1 AND spent_usd + reserved_usd + $2 <= budget_usd RETURNING spent_usd, budget_usd`,
+      [taskId, amountUsd],
+    );
+    if (r.rows[0]) return { ok: true, spentUsd: num(r.rows[0].spent_usd), budgetUsd: num(r.rows[0].budget_usd) };
+    const t = await this.pool.query('SELECT spent_usd, budget_usd FROM tasks WHERE id = $1', [taskId]);
+    if (!t.rows[0]) return { ok: true, spentUsd: 0, budgetUsd: Infinity };
+    return { ok: false, spentUsd: num(t.rows[0].spent_usd), budgetUsd: num(t.rows[0].budget_usd) };
+  }
+
+  async releaseBudget(taskId: string, amountUsd: number) {
+    await this.pool.query('UPDATE tasks SET reserved_usd = GREATEST(reserved_usd - $2, 0) WHERE id = $1', [taskId, amountUsd]);
+  }
+
+  recordUsage(u: Usage, reservedUsd = 0) {
     return this.tx(async (c) => {
       await c.query(
         `INSERT INTO usage_records (id, task_id, subtask_id, agent, model, prompt_tokens, completion_tokens, cost_usd, saved_usd, cached, created_at)
@@ -331,8 +392,9 @@ export class PgStore implements Store {
         [u.id, u.taskId, u.subtaskId, u.agent, u.model, u.promptTokens, u.completionTokens, u.costUsd, u.savedUsd, u.cached, u.createdAt],
       );
       const r = await c.query(
-        'UPDATE tasks SET spent_usd = spent_usd + $2, updated_at = now() WHERE id = $1 RETURNING spent_usd',
-        [u.taskId, u.costUsd],
+        `UPDATE tasks SET spent_usd = spent_usd + $2, reserved_usd = GREATEST(reserved_usd - $3, 0), updated_at = now()
+         WHERE id = $1 RETURNING spent_usd`,
+        [u.taskId, u.costUsd, reservedUsd],
       );
       return num(r.rows[0]?.spent_usd ?? u.costUsd);
     });

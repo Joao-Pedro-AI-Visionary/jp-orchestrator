@@ -82,7 +82,7 @@ Todo loop é limitado. Nada repete "até passar". Limites configuráveis por var
 
 | Loop | Objetivo | Critério de saída | Timeout | Limite de chamadas |
 |---|---|---|---|---|
-| task | Levar a tarefa a um estado final | completed, failed, rejected ou budget_exceeded | `TASK_TIMEOUT_MS` (180 s) | 1 execução por vez por tarefa |
+| task | Levar a tarefa a um estado final | completed, failed, rejected ou budget_exceeded (um único evento terminal) | `TASK_TIMEOUT_MS` (180 s), que aborta o loop via `AbortSignal` | 1 execução por vez por tarefa, entre réplicas (lease `TASK_LEASE_MS`) |
 | plan | Quebrar a tarefa em subtarefas | pelo menos 1 subtarefa de trabalho e 1 revisor | `PLAN_TIMEOUT_MS` (15 s) | 1 chamada ao gateway (tier barato) |
 | dispatch | Rodar subagentes de cada onda em paralelo (`MAX_PARALLEL`) | todas as subtarefas em done | `SUBAGENT_TIMEOUT_MS` (30 s) por subagente | 2 por subtarefa (1 retry) |
 | correction | Revisor aprova ou devolve feedback; coders corrigem | revisão aprovada; falha após 2 rodadas | `REVIEW_TIMEOUT_MS` (30 s) | máximo 2 rodadas de correção |
@@ -96,10 +96,33 @@ testers em paralelo, depois o revisor.
 ### Economia de tokens
 
 - Cache semântico antes de qualquer chamada: prompt parecido (cosseno >= `CACHE_SIMILARITY`) custa zero e registra a economia.
+  O escopo é `tenant:tarefa:agente:tier`: uma resposta nunca é servida para outra tarefa ou outro tenant.
 - Roteamento pelo modelo mais barato do tier pedido; tiers mais caros só como fallback.
 - Limite de tokens de entrada e saída antes de gastar.
-- Budget guard por tarefa: a chamada que cruzaria o orçamento é bloqueada e a tarefa vai para `budget_exceeded`.
+- Budget guard por tarefa com reserva atômica: antes de cada chamada (e de cada fallback) o custo estimado é reservado
+  só se `gasto + reservado + estimativa <= orçamento`; depois a reserva é liquidada pelo custo real. Subagentes em
+  paralelo não estouram o orçamento. A chamada que cruzaria o limite é bloqueada e a tarefa vai para `budget_exceeded`.
 - Embedding local (hash de palavras e bigramas): a consulta ao cache não chama modelo.
+
+### Segurança e acesso
+
+- **API key obrigatória** (`API_KEY`, mínimo 32 caracteres; a API não sobe sem ela). Toda rota exige o header
+  `x-api-key: <chave>` ou `Authorization: Bearer <chave>`. O SSE `GET /events` também aceita `?api_key=<chave>`,
+  porque o `EventSource` do navegador não envia headers. Rotas públicas: `GET /health` (healthcheck) e
+  `POST /webhooks/inbox` (autenticado pela assinatura HMAC).
+- **Rate limit por IP** (janela fixa em memória, antes da checagem da chave): `RATE_LIMIT_MAX` (1800) requisições
+  por `RATE_LIMIT_WINDOW_MS` (60 s) em todas as rotas e `RATE_LIMIT_TASKS_MAX` (20) para `POST /tasks`. Excedeu:
+  `429` com `Retry-After`. Cada réplica conta sozinha; para limite global, use um proxy ou gateway na frente.
+- **Bind**: `HOST`, padrão `127.0.0.1`. A imagem Docker define `HOST=0.0.0.0` e o compose publica API e web só em
+  `127.0.0.1` do host.
+- **CORS** com allowlist fechada: `CORS_ORIGIN` (lista separada por vírgula). Fora de produção o padrão é
+  `http://localhost:3000,http://127.0.0.1:3000`; em produção a variável é obrigatória e `*` não é aceito.
+- **Segredo HMAC dos webhooks** (`WEBHOOK_SECRET`): em produção o boot falha se estiver ausente, igual ao antigo valor
+  de exemplo ou com menos de 32 caracteres. Fora de produção, nesses casos, a API usa um segredo aleatório por
+  processo (com aviso) e nunca assina com o valor público.
+- **Dashboard**: o web envia a chave em todo `fetch`, no download do CSV e no SSE, lida de `NEXT_PUBLIC_API_KEY` no
+  build. Variável `NEXT_PUBLIC_*` vai embutida no JavaScript do navegador: quem abre o dashboard consegue ler a
+  chave. Isso serve para a demo local; não exponha o dashboard fora da sua máquina sem um login próprio na frente.
 
 ### Garantias de entrega
 
@@ -140,9 +163,12 @@ testers em paralelo, depois o revisor.
 Pré-requisitos: Docker com Compose, Node 22.
 
 ```bash
-docker compose up -d --build        # postgres, redis, api (:3001), web (:3000)
+cp .env.example .env                # preencha API_KEY, NEXT_PUBLIC_API_KEY (= API_KEY) e WEBHOOK_SECRET:
+openssl rand -hex 32                #   um valor para API_KEY/NEXT_PUBLIC_API_KEY, outro para WEBHOOK_SECRET
+docker compose up -d --build        # postgres, redis, api (127.0.0.1:3001), web (127.0.0.1:3000)
 open http://localhost:3000
 
+export API_KEY=...                  # os scripts e o e2e mandam essa chave em x-api-key
 npm run loop:run                    # dispara um loop real e mostra o pico de subagentes em paralelo
 npm run billing:report              # relatório de consumo em reports/billing-AAAA-MM-DD.md
 npm run budget:check -- --warn 0.8  # sai com código 1 se alguma tarefa passou de 80% do orçamento
@@ -157,7 +183,8 @@ npm run prepush                     # lint + typecheck + build + testes
 npx playwright install chromium && npm run e2e   # e2e contra o stack rodando
 ```
 
-Sem `DATABASE_URL` e `REDIS_URL` a API roda inteira em memória. Variáveis em `.env.example`.
+Sem `DATABASE_URL` e `REDIS_URL` a API roda inteira em memória. Variáveis em `.env.example`. Para rodar a API fora
+do Docker, exporte `API_KEY` (e `NEXT_PUBLIC_API_KEY` com o mesmo valor ao subir o web).
 Contrato da API em `docs/api-contract.md`. Screenshots do e2e em `docs/screenshots/`.
 
 ### Vídeos de demonstração
@@ -209,6 +236,20 @@ live over SSE.
 
 This version ships a deterministic `MockProvider`; real providers plug in as another `LlmProvider` strategy.
 
+### Security and access
+
+- **API key required** (`API_KEY`, at least 32 chars; the API does not boot without it). Every route needs
+  `x-api-key: <key>` or `Authorization: Bearer <key>`. The SSE stream `GET /events` also accepts `?api_key=<key>`
+  (browser `EventSource` cannot send headers). Public routes: `GET /health` and `POST /webhooks/inbox` (HMAC-signed).
+- **Per-IP rate limit** (in-memory fixed window, checked before the key): `RATE_LIMIT_MAX` (1800) per
+  `RATE_LIMIT_WINDOW_MS` (60s) on every route, `RATE_LIMIT_TASKS_MAX` (20) on `POST /tasks`; `429` + `Retry-After`.
+- **Bind** on `HOST`, default `127.0.0.1`; the Docker image sets `0.0.0.0` and compose publishes on host loopback only.
+- **CORS** allowlist from `CORS_ORIGIN` (comma separated). Required in production, `*` rejected.
+- **Webhook HMAC secret**: in production the boot fails when `WEBHOOK_SECRET` is missing, equal to the old example
+  value or shorter than 32 chars. Outside production a random per-process secret is used instead, with a warning.
+- **Dashboard** sends the key from `NEXT_PUBLIC_API_KEY` (build time). It ends up in the browser bundle, so this is
+  for local demos only; do not expose the dashboard without your own login in front of it.
+
 ### Delivery guarantees
 
 - **Webhooks (outbox → receiver): at-least-once delivery + receiver dedupe.** Events are written in the same
@@ -237,7 +278,9 @@ This version ships a deterministic `MockProvider`; real providers plug in as ano
 ### Run it
 
 ```bash
+cp .env.example .env           # fill API_KEY, NEXT_PUBLIC_API_KEY (= API_KEY), WEBHOOK_SECRET (openssl rand -hex 32)
 docker compose up -d --build   # http://localhost:3000 (UI), http://localhost:3001 (API)
+export API_KEY=...             # scripts and e2e send it as x-api-key
 npm run loop:run               # real orchestration loop with parallel subagents
 npm run billing:report         # token and cost report
 npm test                       # unit tests
