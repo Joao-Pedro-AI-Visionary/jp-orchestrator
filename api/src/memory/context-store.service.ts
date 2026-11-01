@@ -5,6 +5,8 @@ import { canonicalJson, nowIso, sha256 } from '../common/util';
 import { EventBus } from '../events/event-bus';
 import { Store } from '../persistence/store.port';
 
+const MAX_COMMIT_ATTEMPTS = 5;
+
 /**
  * Versioned context per task. Each snapshot is append-only and chained:
  * hash = sha256(parentHash + canonical content), like a tiny git log.
@@ -18,22 +20,30 @@ export class ContextStore {
     return sha256(`${parentHash ?? ''}\n${canonicalJson(content)}`);
   }
 
+  /**
+   * Appends version n+1 on top of the latest snapshot. When a concurrent commit takes
+   * that version first, re-reads the chain and retries on top of it (bounded).
+   */
   async commit(taskId: string, label: string, content: Record<string, unknown>): Promise<Snapshot> {
-    const history = await this.store.listSnapshots(taskId);
-    const parent = history[history.length - 1] ?? null;
-    const parentHash = parent?.hash ?? null;
-    const snapshot: Snapshot = {
-      taskId,
-      version: (parent?.version ?? 0) + 1,
-      hash: ContextStore.hashOf(parentHash, content),
-      parentHash,
-      label,
-      content,
-      createdAt: nowIso(),
-    };
-    await this.store.addSnapshot(snapshot);
-    this.bus.emit('snapshot.created', taskId, { version: snapshot.version, hash: snapshot.hash, label });
-    return snapshot;
+    for (let attempt = 1; ; attempt++) {
+      const history = await this.store.listSnapshots(taskId);
+      const parent = history[history.length - 1] ?? null;
+      const parentHash = parent?.hash ?? null;
+      const snapshot: Snapshot = {
+        taskId,
+        version: (parent?.version ?? 0) + 1,
+        hash: ContextStore.hashOf(parentHash, content),
+        parentHash,
+        label,
+        content,
+        createdAt: nowIso(),
+      };
+      if (await this.store.addSnapshot(snapshot)) {
+        this.bus.emit('snapshot.created', taskId, { version: snapshot.version, hash: snapshot.hash, label });
+        return snapshot;
+      }
+      if (attempt >= MAX_COMMIT_ATTEMPTS) throw new Error(`Snapshot ${label} de ${taskId}: versão disputada ${attempt} vezes`);
+    }
   }
 
   history(taskId: string): Promise<Snapshot[]> {

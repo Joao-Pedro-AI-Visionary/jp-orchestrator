@@ -78,11 +78,17 @@ export interface TaskDetail {
   usage: Usage[];
   approval: Approval | null;
   memory: MemoryEntry[];
+  /** Same limit the API loop uses (MAX_CORRECTION_ROUNDS). */
+  maxCorrectionRounds: number;
+  /** False when resuming would replay the same final rejection. */
+  resumable: boolean;
 }
+/** 'disabled': not configured (the API runs on its in-memory adapter). */
+export type DependencyState = "up" | "down" | "disabled";
 export interface Health {
   ok: boolean;
-  postgres: boolean;
-  redis: boolean;
+  postgres: DependencyState;
+  redis: DependencyState;
 }
 export interface BillingSummary {
   totals: { tokens: number; costUsd: number; calls: number; cacheHits: number; savedUsd: number };

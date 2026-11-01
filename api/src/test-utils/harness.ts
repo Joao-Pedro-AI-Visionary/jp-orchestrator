@@ -39,7 +39,7 @@ export function orchestratorHarness(provider?: LlmProvider) {
   const runtime = new JournalRuntime(g.store);
   const dispatcher = new Dispatcher(g.store, new StrategyRegistry('agent', DEFAULT_AGENTS), g.gateway, tools, memory, g.bus, loops().dispatch);
   const context = new ContextStore(g.store, g.bus);
-  const orchestrator = new Orchestrator(g.store, runtime, new Planner(g.gateway), dispatcher, context, memory, g.bus);
+  const orchestrator = new Orchestrator(g.store, runtime, new Planner(), dispatcher, context, memory, g.bus);
 
   const createTask = async (patch: Partial<Task> = {}) => {
     const now = nowIso();

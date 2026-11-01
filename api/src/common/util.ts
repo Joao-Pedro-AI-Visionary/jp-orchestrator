@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { DomainError } from './errors';
 
 export const newId = (): string => randomUUID();
 export const nowIso = (): string => new Date().toISOString();
@@ -16,9 +17,15 @@ export function canonicalJson(value: unknown): string {
   return `{${keys.map((k) => `${JSON.stringify(k)}:${canonicalJson(obj[k])}`).join(',')}}`;
 }
 
-export const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+/** Waits `ms`; rejects with the abort reason as soon as `signal` aborts. */
+export const sleep = (ms: number, signal?: AbortSignal): Promise<void> => new Promise((resolve, reject) => {
+  if (signal?.aborted) return reject(signal.reason);
+  const onAbort = () => { clearTimeout(timer); reject(signal!.reason); };
+  const timer = setTimeout(() => { signal?.removeEventListener('abort', onAbort); resolve(); }, ms);
+  signal?.addEventListener('abort', onAbort, { once: true });
+});
 
-export class TimeoutError extends Error {
+export class TimeoutError extends DomainError {
   constructor(label: string, ms: number) {
     super(`${label} excedeu o timeout de ${ms}ms`);
   }
@@ -30,6 +37,32 @@ export function withTimeout<T>(promise: Promise<T>, ms: number, label: string): 
     timer = setTimeout(() => reject(new TimeoutError(label, ms)), ms);
   });
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
+/**
+ * Runs `fn` with a signal that aborts after `ms` (or when `parent` aborts). Unlike
+ * withTimeout the work is told to stop: `fn` must pass the signal down. The caller
+ * still gets the rejection on time if `fn` ignores it.
+ */
+export async function withDeadline<T>(
+  fn: (signal: AbortSignal) => Promise<T>, ms: number, label: string, parent?: AbortSignal,
+): Promise<T> {
+  const own = new AbortController();
+  const signal = parent ? AbortSignal.any([parent, own.signal]) : own.signal;
+  const timer = setTimeout(() => own.abort(new TimeoutError(label, ms)), ms);
+  let onAbort = () => {};
+  const aborted = new Promise<never>((_, reject) => {
+    onAbort = () => reject(signal.reason);
+    if (signal.aborted) onAbort();
+    else signal.addEventListener('abort', onAbort, { once: true });
+  });
+  aborted.catch(() => undefined);
+  try {
+    return await Promise.race([fn(signal), aborted]);
+  } finally {
+    clearTimeout(timer);
+    signal.removeEventListener('abort', onAbort);
+  }
 }
 
 export const envNumber = (name: string, fallback: number): number => {

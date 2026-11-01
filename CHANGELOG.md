@@ -4,7 +4,57 @@ Formato baseado em Keep a Changelog. Versionamento semântico.
 
 ## [Unreleased]
 
+### Auditoria 2026-11-01: achados médios e baixos
+- Webhooks: `POST /webhooks/inbox` responde `401` sem assinatura válida e não grava nada (M2).
+- Gateway: modelo marcado fora do ar é pulado sem reserva nem chamada (M3); resposta degradada de tier inferior não é
+  cacheada no escopo do tier pedido (M9).
+- Compose: Postgres e Redis com senha obrigatória (`POSTGRES_PASSWORD`, `REDIS_PASSWORD` + `requirepass`) e portas só em
+  `127.0.0.1` (M4).
+- SSE: filtro `?taskId=`, limite de conexões por IP e total com `429` (M5).
+- Revisor reprova sem evidência do código na memória compartilhada; aviso no boot com Postgres sem Redis (M6).
+- Aprovação humana resolvida com escrita condicional (`WHERE status = 'pending'`): decisões concorrentes dão um `409` (M7).
+- Billing agregado no banco (`GROUP BY`) e atualizado no máximo a cada 2,5 s pelo dashboard (M8).
+- Snapshot de contexto idempotente no replay e commit com nova tentativa em disputa de versão (M1, parcial: ver README).
+- Retry de subagente só depois que a tentativa anterior parou; quem ignora o abort não é repetido. Agentes checam o
+  sinal antes de cada efeito (M13). Sem retry para limite de tokens e estratégia desconhecida (L5).
+- `Idempotency-Key` de tarefa: até 255 caracteres, vinculada ao hash do corpo (`422` se divergir) e esquecida após
+  `IDEMPOTENCY_KEY_TTL_MS` (migração `0004`) (L3). Nota de aprovação validada (texto, até 1000) (L2).
+- Mensagens de erro públicas por domínio; o resto vira `Erro interno (ref …)` com o detalhe no log (L4).
+- "Retomar" recusado (`409`, `resumable: false`) quando a revisão reprovou na última rodada (L5).
+- Planner sem a chamada de modelo paga e descartada (L6).
+- Store e memória compartilhada em memória limitados; store em memória recusado em produção sem
+  `ALLOW_MEMORY_STORE=true` (L7). `schema.sql` aplicado dentro do advisory lock das migrações (L8).
+- Cabeçalhos de segurança na API e no web, incluindo CSP com `frame-ancestors 'none'` (L9).
+- `/health` diferencia `up`, `down` e `disabled`; detalhe da tarefa expõe `maxCorrectionRounds` e `resumable` (L13).
+- Web: formulário não perde o texto quando a criação falha (M10); live region anuncia só transições relevantes, sem
+  heartbeat, com coalescência (M11); `Idempotency-Key` por rascunho, com fallback a `crypto.getRandomValues` (M12);
+  ressincroniza após reconexão do SSE e "pending" por tarefa (L10); `MotionConfig reducedMotion="user"` e barras de
+  billing sem animação com movimento reduzido (L11); limites iguais aos da API, erro por campo com `aria-invalid`,
+  `aria-describedby` e foco (L12); KPIs com erro e "Tentar de novo", "não configurado" no header (L13); API via
+  `/api` no mesmo domínio, URL resolvida em runtime (`API_INTERNAL_URL`) (L14).
+
+### Segurança
+- API exige `API_KEY` em todas as rotas (`x-api-key` ou `Authorization: Bearer`; no SSE `/events` também
+  `?api_key=`), exceto `GET /health` e `POST /webhooks/inbox`. O boot falha sem chave ou com chave curta.
+- Rate limit por IP (todas as rotas e, mais apertado, `POST /tasks`), com `429` e `Retry-After`.
+- Bind em `HOST` (padrão `127.0.0.1`; a imagem Docker usa `0.0.0.0`) e compose publicando API e web só em `127.0.0.1`.
+- CORS com allowlist de `CORS_ORIGIN` (obrigatório em produção, sem `*`); antes refletia qualquer origem.
+- `WEBHOOK_SECRET` sem fallback público: em produção o boot falha se ausente, igual ao exemplo ou curto (< 32);
+  fora de produção usa um segredo aleatório por processo. O compose exige a variável.
+- `multer` fixado em 2.5.0 via `overrides` (GHSA-q7qp-rjg7-q26m).
+- Dashboard e scripts enviam a chave (`NEXT_PUBLIC_API_KEY` / `API_KEY`); o CSV é baixado via `fetch` com header.
+
 ### Corrigido
+- Timeout da tarefa aborta o loop de verdade (`AbortSignal` propagado a planner, subagentes, gateway e provedor) e a
+  guarda só é liberada quando o loop para. O estado final só é gravado se a tarefa ainda não for terminal
+  (`finishTask`), então cada tarefa emite um único evento terminal.
+- Execução por tarefa protegida por lease no banco (`tasks.lease_owner`/`lease_until`, renovado por heartbeat):
+  duas réplicas não rodam a mesma tarefa, `resumeActive` só retoma as tarefas cujo lease conseguiu e
+  `POST /tasks/:id/resume` considera o lease de qualquer réplica. Lease perdido aborta a execução sem evento terminal.
+- `putStep` do journal é first-writer-wins: quem perde a corrida usa o valor já gravado, não o próprio.
+- Cache semântico com escopo `tenant:tarefa:agente:tier`; antes uma tarefa podia receber a resposta de outra.
+- Orçamento com reserva atômica (`tasks.reserved_usd`) antes de cada chamada e de cada fallback, liquidada pelo custo
+  real; antes subagentes paralelos passavam todos pelo guard e estouravam o limite.
 - Reentregas e retries agora têm horizonte imposto dentro do TTL da chave de idempotência (antes só implícito):
   o boot falha (`assertRetryHorizon`) se o pior caso do outbox (soma dos backoffs + tentativas × (timeout + lease)),
   o das ferramentas (tentativas × lease) ou `OUTBOX_MAX_AGE_MS` for >= `IDEMPOTENCY_KEY_TTL_MS`, ou se algum valor

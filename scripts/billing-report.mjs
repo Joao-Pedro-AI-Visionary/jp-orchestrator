@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 // Relatório de consumo: tokens e custo por modelo, subagente e tarefa.
+// Requer API_KEY no ambiente (a mesma da API).
 // Uso: node scripts/billing-report.mjs [--api http://localhost:3001] [--out reports/billing.md]
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
@@ -11,7 +12,7 @@ const arg = (name, fallback) => {
 const api = arg('api', process.env.API_URL ?? 'http://localhost:3001');
 const out = arg('out', `reports/billing-${new Date().toISOString().slice(0, 10)}.md`);
 
-const res = await fetch(`${api}/billing/summary`);
+const res = await fetch(`${api}/billing/summary`, { headers: { 'x-api-key': process.env.API_KEY ?? '' } });
 if (!res.ok) {
   console.error(`Falha ao ler ${api}/billing/summary: HTTP ${res.status}`);
   process.exit(1);

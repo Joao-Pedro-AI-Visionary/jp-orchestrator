@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 // Dispara um loop real de orquestração contra a API e acompanha até o estado final.
+// Requer API_KEY no ambiente (a mesma da API).
 // Uso: node scripts/run-loop.mjs [--api http://localhost:3001] [--approve]
 const arg = (name, fallback) => {
   const i = process.argv.indexOf(`--${name}`);
@@ -7,8 +8,9 @@ const arg = (name, fallback) => {
 };
 const api = arg('api', process.env.API_URL ?? 'http://localhost:3001');
 const approve = process.argv.includes('--approve');
+const auth = { 'x-api-key': process.env.API_KEY ?? '' };
 const post = (path, body, headers = {}) => fetch(`${api}${path}`, {
-  method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: JSON.stringify(body ?? {}),
+  method: 'POST', headers: { 'content-type': 'application/json', ...auth, ...headers }, body: JSON.stringify(body ?? {}),
 }).then((r) => r.json());
 
 const task = await post('/tasks', {
@@ -22,7 +24,7 @@ console.log(`Tarefa ${task.id} criada`);
 let peak = 0;
 const deadline = Date.now() + 120_000;
 for (;;) {
-  const d = await fetch(`${api}/tasks/${task.id}`).then((r) => r.json());
+  const d = await fetch(`${api}/tasks/${task.id}`, { headers: auth }).then((r) => r.json());
   const running = d.subtasks.filter((s) => s.status === 'running').length;
   peak = Math.max(peak, running);
   process.stdout.write(`\r${d.task.status.padEnd(18)} subagentes rodando: ${running}  gasto: $${d.task.spentUsd.toFixed(6)}   `);

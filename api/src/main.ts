@@ -4,18 +4,21 @@ import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
 import { assertRetryHorizon, retryConfig } from './common/retry-horizon';
 import { Orchestrator } from './orchestration/orchestrator.service';
+import { configureHttp } from './security/http-app';
+import { assertSecurityConfig } from './security/security.config';
 
 async function bootstrap() {
   // Fail fast: no redelivery or tool retry may outlive the idempotency key.
   assertRetryHorizon(retryConfig());
+  // Fail fast: API key, CORS allowlist and webhook secret.
+  const security = assertSecurityConfig();
   const app = await NestFactory.create(AppModule, { rawBody: true });
-  const origin = process.env.CORS_ORIGIN ? process.env.CORS_ORIGIN.split(',') : true;
-  app.enableCors({ origin, exposedHeaders: ['Idempotent-Replay'] });
+  configureHttp(app, security);
   app.enableShutdownHooks();
   const port = Number(process.env.PORT ?? 3001);
-  await app.listen(port, '0.0.0.0');
+  await app.listen(port, security.host);
   const resumed = process.env.RESUME_ON_BOOT === 'off' ? 0 : await app.get(Orchestrator).resumeActive();
-  Logger.log(`JP Orchestrator API em :${port} (tarefas retomadas: ${resumed})`, 'Bootstrap');
+  Logger.log(`JP Orchestrator API em ${security.host}:${port} (tarefas retomadas: ${resumed})`, 'Bootstrap');
 }
 
 void bootstrap();

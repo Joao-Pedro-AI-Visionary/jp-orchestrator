@@ -12,6 +12,10 @@ export interface AgentContext {
   gateway: GatewayService;
   tools: ToolInvoker;
   memory: SharedMemory;
+  /** Aborted on task timeout, subagent timeout or lost lease. */
+  signal?: AbortSignal;
+  /** Every subtask of the plan, so the reviewer knows which code entries to expect. */
+  team?: Subtask[];
 }
 
 export interface AgentResult {
@@ -38,4 +42,4 @@ export const promptFor = (ctx: AgentContext, extra: string[] = []): string => [
 ].join('\n');
 
 export const call = (ctx: AgentContext, agent: AgentStrategy, prompt: string) =>
-  ctx.gateway.complete({ taskId: ctx.task.id, subtaskId: ctx.subtask.id, agent: agent.key, prompt, tier: agent.tier });
+  ctx.gateway.complete({ taskId: ctx.task.id, subtaskId: ctx.subtask.id, agent: agent.key, prompt, tier: agent.tier, signal: ctx.signal });

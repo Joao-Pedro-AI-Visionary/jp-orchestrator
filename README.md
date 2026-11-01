@@ -82,10 +82,10 @@ Todo loop é limitado. Nada repete "até passar". Limites configuráveis por var
 
 | Loop | Objetivo | Critério de saída | Timeout | Limite de chamadas |
 |---|---|---|---|---|
-| task | Levar a tarefa a um estado final | completed, failed, rejected ou budget_exceeded | `TASK_TIMEOUT_MS` (180 s) | 1 execução por vez por tarefa |
-| plan | Quebrar a tarefa em subtarefas | pelo menos 1 subtarefa de trabalho e 1 revisor | `PLAN_TIMEOUT_MS` (15 s) | 1 chamada ao gateway (tier barato) |
-| dispatch | Rodar subagentes de cada onda em paralelo (`MAX_PARALLEL`) | todas as subtarefas em done | `SUBAGENT_TIMEOUT_MS` (30 s) por subagente | 2 por subtarefa (1 retry) |
-| correction | Revisor aprova ou devolve feedback; coders corrigem | revisão aprovada; falha após 2 rodadas | `REVIEW_TIMEOUT_MS` (30 s) | máximo 2 rodadas de correção |
+| task | Levar a tarefa a um estado final | completed, failed, rejected ou budget_exceeded (um único evento terminal) | `TASK_TIMEOUT_MS` (180 s), que aborta o loop via `AbortSignal` | 1 execução por vez por tarefa, entre réplicas (lease `TASK_LEASE_MS`) |
+| plan | Quebrar a tarefa em subtarefas (determinístico, sem chamada de modelo) | pelo menos 1 subtarefa de trabalho e 1 revisor | `PLAN_TIMEOUT_MS` (15 s) | 0 chamadas de modelo |
+| dispatch | Rodar subagentes de cada onda em paralelo (`MAX_PARALLEL`) | todas as subtarefas em done | `SUBAGENT_TIMEOUT_MS` (30 s) por subagente, que aborta a tentativa | 2 por subtarefa (1 retry, só depois que a tentativa anterior parou de fato; sem retry para limite de tokens ou estratégia desconhecida) |
+| correction | Revisor aprova ou devolve feedback; coders corrigem. Sem evidência do código na memória compartilhada, reprova | revisão aprovada; falha após 2 rodadas (tarefa não retomável) | `REVIEW_TIMEOUT_MS` (30 s) | máximo 2 rodadas de correção |
 | approval | Pausa durável até decisão humana | approved ou rejected | sem timeout (pausa persistida) | 0 chamadas de modelo |
 | merge | Consolidar saídas e artefatos | resultado único sem duplicatas | `MERGE_TIMEOUT_MS` (10 s) | 0 chamadas de modelo |
 | outbox | Entregar eventos assinados | 2xx, ou morto após `OUTBOX_MAX_ATTEMPTS`, ou `expired` após `OUTBOX_MAX_AGE_MS` | `OUTBOX_TIMEOUT_MS` (5 s) por entrega | 5 tentativas, backoff 2^n s, idade máxima 10 min |
@@ -96,10 +96,49 @@ testers em paralelo, depois o revisor.
 ### Economia de tokens
 
 - Cache semântico antes de qualquer chamada: prompt parecido (cosseno >= `CACHE_SIMILARITY`) custa zero e registra a economia.
-- Roteamento pelo modelo mais barato do tier pedido; tiers mais caros só como fallback.
+  O escopo é `tenant:tarefa:agente:tier`: uma resposta nunca é servida para outra tarefa ou outro tenant.
+- Roteamento pelo modelo mais barato do tier pedido; tiers mais caros só como fallback. Modelo marcado fora do ar é
+  pulado sem reserva nem chamada. Resposta de um tier abaixo do pedido (fallback degradado) não entra no cache.
 - Limite de tokens de entrada e saída antes de gastar.
-- Budget guard por tarefa: a chamada que cruzaria o orçamento é bloqueada e a tarefa vai para `budget_exceeded`.
+- Budget guard por tarefa com reserva atômica: antes de cada chamada (e de cada fallback) o custo estimado é reservado
+  só se `gasto + reservado + estimativa <= orçamento`; depois a reserva é liquidada pelo custo real. Subagentes em
+  paralelo não estouram o orçamento. A chamada que cruzaria o limite é bloqueada e a tarefa vai para `budget_exceeded`.
 - Embedding local (hash de palavras e bigramas): a consulta ao cache não chama modelo.
+
+### Segurança e acesso
+
+- **API key obrigatória** (`API_KEY`, mínimo 32 caracteres; a API não sobe sem ela). Toda rota exige o header
+  `x-api-key: <chave>` ou `Authorization: Bearer <chave>`. O SSE `GET /events` também aceita `?api_key=<chave>`,
+  porque o `EventSource` do navegador não envia headers. Rotas públicas: `GET /health` (healthcheck) e
+  `POST /webhooks/inbox` (autenticado pela assinatura HMAC: sem assinatura válida responde `401` e não grava nada).
+- **SSE** `GET /events`: `?taskId=` filtra uma tarefa; no máximo `SSE_MAX_PER_CLIENT` (20) conexões por IP e
+  `SSE_MAX_CONNECTIONS` (200) no total (`429` acima disso). O barramento é em processo: com várias réplicas cada
+  conexão só vê os eventos da réplica em que conectou.
+- **Cabeçalhos**: a API manda CSP `default-src 'none'`, `X-Frame-Options: DENY`, `nosniff` e `Referrer-Policy`, sem
+  `X-Powered-By`; o web manda CSP (com `frame-ancestors 'none'`), `X-Frame-Options` e `nosniff`.
+- **Erros**: só mensagens de domínio (timeout, orçamento, revisão, modelos indisponíveis) chegam a `task.error`, ao SSE e
+  aos webhooks. Qualquer outro erro vira `Erro interno (ref xxxxxxxx)` e o detalhe fica só no log, com o mesmo ref.
+- **Postgres e Redis no compose**: senhas obrigatórias (`POSTGRES_PASSWORD`, `REDIS_PASSWORD`, Redis com
+  `requirepass`) e portas publicadas só em `127.0.0.1`.
+- **Rate limit por IP** (janela fixa em memória, antes da checagem da chave): `RATE_LIMIT_MAX` (1800) requisições
+  por `RATE_LIMIT_WINDOW_MS` (60 s) em todas as rotas e `RATE_LIMIT_TASKS_MAX` (20) para `POST /tasks`. Excedeu:
+  `429` com `Retry-After`. Cada réplica conta sozinha; para limite global, use um proxy ou gateway na frente.
+- **Bind**: `HOST`, padrão `127.0.0.1`. A imagem Docker define `HOST=0.0.0.0` e o compose publica API e web só em
+  `127.0.0.1` do host.
+- **CORS** com allowlist fechada: `CORS_ORIGIN` (lista separada por vírgula). Fora de produção o padrão é
+  `http://localhost:3000,http://127.0.0.1:3000`; em produção a variável é obrigatória e `*` não é aceito.
+- **Segredo HMAC dos webhooks** (`WEBHOOK_SECRET`): em produção o boot falha se estiver ausente, igual ao antigo valor
+  de exemplo ou com menos de 32 caracteres. Fora de produção, nesses casos, a API usa um segredo aleatório por
+  processo (com aviso) e nunca assina com o valor público.
+- **Dashboard**: o web envia a chave em todo `fetch`, no download do CSV e no SSE, lida de `NEXT_PUBLIC_API_KEY` no
+  build. Variável `NEXT_PUBLIC_*` vai embutida no JavaScript do navegador: quem abre o dashboard consegue ler a
+  chave. Isso serve para a demo local; não exponha o dashboard fora da sua máquina sem um login próprio na frente.
+- **URL da API no web**: por padrão o navegador chama `/api` no próprio dashboard e o servidor do Next repassa para
+  `API_INTERNAL_URL`, lida em runtime (a mesma imagem serve qualquer host, sem CORS cross-origin). Por esse caminho a
+  API vê o IP do servidor web, então o rate limit por IP passa a valer para todos os usuários do dashboard juntos.
+  `NEXT_PUBLIC_API_URL` (fixada no build) faz o navegador falar direto com a API.
+- **Store em memória**: em `NODE_ENV=production` a API recusa subir sem `DATABASE_URL`, salvo `ALLOW_MEMORY_STORE=true`.
+  Ele é limitado a `MEMORY_STORE_MAX_TASKS` (500) tarefas: as finalizadas mais antigas saem com seus registros.
 
 ### Garantias de entrega
 
@@ -108,8 +147,8 @@ testers em paralelo, depois o revisor.
   marca `delivered` depois do 2xx. Se o processo morrer entre o 2xx e essa marca, ou a entrega passar de 30 s, o
   evento é reenviado. Todo envio do mesmo evento leva os mesmos `X-JP-Event-Id` e `Idempotency-Key` (= id do
   evento), com assinatura nova. O receptor deduplica por esse id: `webhook_inbox.event_id` é `UNIQUE` e o insert
-  usa `ON CONFLICT DO NOTHING`; a repetição responde 200 com `duplicate: true`. Só deduplica evento com assinatura
-  válida e cujo header bate com o `id` assinado no corpo, para uma requisição forjada não "ocupar" o id de um evento real.
+  usa `ON CONFLICT DO NOTHING`; a repetição responde 200 com `duplicate: true`. Requisição sem assinatura válida
+  recebe `401` e não é gravada; só deduplica evento cujo header bate com o `id` assinado no corpo.
 - **Ferramentas (`ToolInvoker`): no máximo um resultado por `Idempotency-Key`; efeito externo idempotente pela chave.**
   Antes de executar, grava a linha `started` com lease (`TOOL_LEASE_MS`, padrão 10 s, menor que o timeout de 30 s do
   subagente). O handler recebe `ctx.idempotencyKey` (estável entre tentativas) e `ctx.attempt`, e tem o lease como
@@ -131,7 +170,13 @@ testers em paralelo, depois o revisor.
   Configure `IDEMPOTENCY_KEY_TTL_MS` com o menor TTL de chave entre os receptores e destinos reais. `webhook_inbox`
   e `tool_calls` ainda não são podados, então o receptor de demonstração lembra da chave para sempre.
 - Os testes com `crash` no nome simulam a morte do processo nesses dois pontos (`outbox-relay.spec.ts`, `tool-invoker.spec.ts`).
-- Migrações SQL em `api/src/persistence/migrations/`, aplicadas no boot uma vez cada (tabela `schema_migrations`).
+- **Journal de passos: limite conhecido.** O efeito de um passo e a sua linha em `step_journal` não estão na mesma
+  transação. O que já é idempotente no replay: as subtarefas (ids vêm do plano journalado), os snapshots de contexto
+  (um por rótulo) e as chamadas de ferramenta (`tool_calls`). O que **não** é: se o processo morrer durante um passo
+  `dispatch:*`/`correction:*`/`review:*` antes de journalá-lo, a retomada refaz as chamadas de modelo daquele passo e
+  elas são cobradas de novo (dentro do orçamento da tarefa).
+- Migrações SQL em `api/src/persistence/migrations/`, aplicadas no boot uma vez cada (tabela `schema_migrations`),
+  junto com o `schema.sql`, tudo sob o mesmo advisory lock.
   O SQL do `PgStore` e as migrações são testados num Postgres real em WASM (PGlite) em `pg.store.spec.ts`.
 - Eventos gravados no inbox antes da v0.3.2 não têm `event_id`, então uma reentrega deles não é deduplicada.
 
@@ -140,9 +185,12 @@ testers em paralelo, depois o revisor.
 Pré-requisitos: Docker com Compose, Node 22.
 
 ```bash
-docker compose up -d --build        # postgres, redis, api (:3001), web (:3000)
+cp .env.example .env                # preencha API_KEY, NEXT_PUBLIC_API_KEY (= API_KEY), WEBHOOK_SECRET,
+openssl rand -hex 32                #   POSTGRES_PASSWORD e REDIS_PASSWORD: um valor diferente para cada um
+docker compose up -d --build        # postgres, redis, api (127.0.0.1:3001), web (127.0.0.1:3000)
 open http://localhost:3000
 
+export API_KEY=...                  # os scripts e o e2e mandam essa chave em x-api-key
 npm run loop:run                    # dispara um loop real e mostra o pico de subagentes em paralelo
 npm run billing:report              # relatório de consumo em reports/billing-AAAA-MM-DD.md
 npm run budget:check -- --warn 0.8  # sai com código 1 se alguma tarefa passou de 80% do orçamento
@@ -157,7 +205,8 @@ npm run prepush                     # lint + typecheck + build + testes
 npx playwright install chromium && npm run e2e   # e2e contra o stack rodando
 ```
 
-Sem `DATABASE_URL` e `REDIS_URL` a API roda inteira em memória. Variáveis em `.env.example`.
+Sem `DATABASE_URL` e `REDIS_URL` a API roda inteira em memória. Variáveis em `.env.example`. Para rodar a API fora
+do Docker, exporte `API_KEY` (e `NEXT_PUBLIC_API_KEY` com o mesmo valor ao subir o web).
 Contrato da API em `docs/api-contract.md`. Screenshots do e2e em `docs/screenshots/`.
 
 ### Vídeos de demonstração
@@ -209,6 +258,30 @@ live over SSE.
 
 This version ships a deterministic `MockProvider`; real providers plug in as another `LlmProvider` strategy.
 
+### Security and access
+
+- **API key required** (`API_KEY`, at least 32 chars; the API does not boot without it). Every route needs
+  `x-api-key: <key>` or `Authorization: Bearer <key>`. The SSE stream `GET /events` also accepts `?api_key=<key>`
+  (browser `EventSource` cannot send headers). Public routes: `GET /health` and `POST /webhooks/inbox` (HMAC-signed;
+  a missing or invalid signature gets `401` and nothing is stored).
+- **SSE** `GET /events`: `?taskId=` narrows to one task; capped at `SSE_MAX_PER_CLIENT` (20) per IP and
+  `SSE_MAX_CONNECTIONS` (200) overall (`429`). The bus is in process: with several replicas a stream only sees its replica.
+- **Headers**: CSP, `X-Frame-Options: DENY`, `nosniff`, `Referrer-Policy` on the API and the web; no `X-Powered-By`.
+- **Errors**: only domain messages reach `task.error`, SSE and webhooks; anything else becomes
+  `Erro interno (ref xxxxxxxx)` with the detail in the log.
+- **Compose**: Postgres and Redis require `POSTGRES_PASSWORD` / `REDIS_PASSWORD` and are published on loopback only.
+- **Per-IP rate limit** (in-memory fixed window, checked before the key): `RATE_LIMIT_MAX` (1800) per
+  `RATE_LIMIT_WINDOW_MS` (60s) on every route, `RATE_LIMIT_TASKS_MAX` (20) on `POST /tasks`; `429` + `Retry-After`.
+- **Bind** on `HOST`, default `127.0.0.1`; the Docker image sets `0.0.0.0` and compose publishes on host loopback only.
+- **CORS** allowlist from `CORS_ORIGIN` (comma separated). Required in production, `*` rejected.
+- **Webhook HMAC secret**: in production the boot fails when `WEBHOOK_SECRET` is missing, equal to the old example
+  value or shorter than 32 chars. Outside production a random per-process secret is used instead, with a warning.
+- **Dashboard** sends the key from `NEXT_PUBLIC_API_KEY` (build time). It ends up in the browser bundle, so this is
+  for local demos only; do not expose the dashboard without your own login in front of it.
+- **API URL**: by default the browser calls `/api` on the dashboard origin and the Next server forwards it to
+  `API_INTERNAL_URL` at runtime (one image for any host, no cross-origin CORS). The API then sees the web server IP,
+  so the per-IP rate limit is shared by every dashboard user. `NEXT_PUBLIC_API_URL` (build time) restores direct calls.
+
 ### Delivery guarantees
 
 - **Webhooks (outbox → receiver): at-least-once delivery + receiver dedupe.** Events are written in the same
@@ -237,7 +310,10 @@ This version ships a deterministic `MockProvider`; real providers plug in as ano
 ### Run it
 
 ```bash
+cp .env.example .env           # fill API_KEY, NEXT_PUBLIC_API_KEY (= API_KEY), WEBHOOK_SECRET, POSTGRES_PASSWORD,
+                               # REDIS_PASSWORD (openssl rand -hex 32, one value each)
 docker compose up -d --build   # http://localhost:3000 (UI), http://localhost:3001 (API)
+export API_KEY=...             # scripts and e2e send it as x-api-key
 npm run loop:run               # real orchestration loop with parallel subagents
 npm run billing:report         # token and cost report
 npm test                       # unit tests

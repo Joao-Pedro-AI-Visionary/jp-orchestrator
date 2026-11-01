@@ -1,7 +1,8 @@
 "use client";
 
-import { forwardRef, useState } from "react";
+import { forwardRef, useRef, useState } from "react";
 import { Loader2, Send } from "lucide-react";
+import { LIMITS, newIdempotencyKey, type TaskField, validateTask } from "@/lib/limits";
 import type { Dashboard } from "@/lib/use-dashboard";
 
 const PRESETS = [
@@ -36,20 +37,58 @@ export const NewTaskForm = forwardRef<HTMLInputElement, { d: Dashboard }>(functi
   const [description, setDescription] = useState("");
   const [budget, setBudget] = useState("0.05");
   const [approval, setApproval] = useState(false);
-  const [localError, setLocalError] = useState<string | null>(null);
+  const [fieldErrors, setFieldErrors] = useState<Partial<Record<TaskField, string>>>({});
+  const [serverError, setServerError] = useState<string | null>(null);
   const busy = !!d.pending.create;
+  const descRef = useRef<HTMLTextAreaElement>(null);
+  const budgetRef = useRef<HTMLInputElement>(null);
+  // One key per draft: a resend of the same content reuses it (no duplicate task if the
+  // first response was lost); it changes only after success or when the content changes.
+  const draftKey = useRef<{ content: string; key: string } | null>(null);
+
+  function draftChanged() {
+    setServerError(null);
+  }
+
+  function focusField(field: TaskField) {
+    const el = field === "title" ? (typeof titleRef === "function" ? null : titleRef?.current) : field === "description" ? descRef.current : budgetRef.current;
+    el?.focus();
+  }
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
-    const budgetUsd = Number(budget);
-    if (title.trim().length < 3) return setLocalError("Informe um título com pelo menos 3 caracteres.");
-    if (!description.trim()) return setLocalError("Descreva o que os subagentes devem fazer.");
-    if (!Number.isFinite(budgetUsd) || budgetUsd <= 0) return setLocalError("O orçamento deve ser maior que zero.");
-    setLocalError(null);
-    await d.createTask({ title: title.trim(), description: description.trim(), budgetUsd, requiresApproval: approval });
+    const errors = validateTask({ title, description, budget });
+    setFieldErrors(errors);
+    setServerError(null);
+    const first = (["title", "description", "budget"] as const).find((f) => errors[f]);
+    if (first) return focusField(first);
+    const body = {
+      title: title.trim(),
+      description: description.trim(),
+      budgetUsd: Number(budget.replace(",", ".")),
+      requiresApproval: approval,
+    };
+    const content = JSON.stringify(body);
+    if (draftKey.current?.content !== content) draftKey.current = { content, key: newIdempotencyKey() };
+    const failure = await d.createTask(body, draftKey.current.key);
+    if (failure) {
+      setServerError(failure);
+      return;
+    }
+    draftKey.current = null;
     setTitle("");
     setDescription("");
+    setFieldErrors({});
   }
+
+  const describedBy = (field: TaskField, hint?: string) =>
+    [hint, fieldErrors[field] ? `task-${field}-error` : null].filter(Boolean).join(" ") || undefined;
+  const fieldError = (field: TaskField) =>
+    fieldErrors[field] ? (
+      <p id={`task-${field}-error`} data-testid={`task-${field}-error`} className="mt-1 text-sm text-bad">
+        {fieldErrors[field]}
+      </p>
+    ) : null;
 
   return (
     <section id="nova-tarefa" aria-labelledby="form-title" className="card p-5" data-testid="new-task-section">
@@ -70,7 +109,8 @@ export const NewTaskForm = forwardRef<HTMLInputElement, { d: Dashboard }>(functi
               setDescription(p.description);
               setBudget(String(p.budget));
               setApproval(p.approval);
-              setLocalError(null);
+              setFieldErrors({});
+              draftChanged();
             }}
           >
             {p.label}
@@ -88,10 +128,16 @@ export const NewTaskForm = forwardRef<HTMLInputElement, { d: Dashboard }>(functi
             data-testid="task-title-input"
             className="field"
             value={title}
-            onChange={(e) => setTitle(e.target.value)}
+            onChange={(e) => {
+              setTitle(e.target.value);
+              draftChanged();
+            }}
             placeholder="Ex.: Criar endpoint de relatórios"
-            maxLength={140}
+            maxLength={LIMITS.titleMax}
+            aria-invalid={!!fieldErrors.title}
+            aria-describedby={describedBy("title")}
           />
+          {fieldError("title")}
         </div>
         <div>
           <label htmlFor="task-desc" className="mb-1 block text-sm font-medium text-neutral-200">
@@ -99,12 +145,23 @@ export const NewTaskForm = forwardRef<HTMLInputElement, { d: Dashboard }>(functi
           </label>
           <textarea
             id="task-desc"
+            ref={descRef}
             data-testid="task-desc-input"
             className="field min-h-28 py-3"
             value={description}
-            onChange={(e) => setDescription(e.target.value)}
+            onChange={(e) => {
+              setDescription(e.target.value);
+              draftChanged();
+            }}
             placeholder="O que deve ser feito, critérios de aceite e limites."
+            maxLength={LIMITS.descriptionMax}
+            aria-invalid={!!fieldErrors.description}
+            aria-describedby={describedBy("description", "task-desc-count")}
           />
+          <p id="task-desc-count" className="mt-1 text-xs text-neutral-400">
+            {description.length} de {LIMITS.descriptionMax} caracteres
+          </p>
+          {fieldError("description")}
         </div>
         <div className="flex flex-wrap items-end gap-4">
           <div className="w-40">
@@ -114,13 +171,21 @@ export const NewTaskForm = forwardRef<HTMLInputElement, { d: Dashboard }>(functi
             <input
               id="task-budget"
               data-testid="task-budget-input"
+              ref={budgetRef}
               type="number"
               step="0.01"
               min="0.01"
+              max={LIMITS.budgetMax}
               className="field"
               value={budget}
-              onChange={(e) => setBudget(e.target.value)}
+              onChange={(e) => {
+                setBudget(e.target.value);
+                draftChanged();
+              }}
+              aria-invalid={!!fieldErrors.budget}
+              aria-describedby={describedBy("budget")}
             />
+            {fieldError("budget")}
           </div>
           <label htmlFor="task-approval" className="flex min-h-12 cursor-pointer items-center gap-3 text-sm text-neutral-200">
             <input
@@ -129,14 +194,22 @@ export const NewTaskForm = forwardRef<HTMLInputElement, { d: Dashboard }>(functi
               type="checkbox"
               className="size-6 accent-brand"
               checked={approval}
-              onChange={(e) => setApproval(e.target.checked)}
+              onChange={(e) => {
+                setApproval(e.target.checked);
+                draftChanged();
+              }}
             />
             Exigir aprovação humana
           </label>
         </div>
-        {localError && (
+        {Object.keys(fieldErrors).length > 0 && (
           <p role="alert" data-testid="task-form-error" className="text-sm text-bad">
-            {localError}
+            Revise os campos destacados.
+          </p>
+        )}
+        {serverError && (
+          <p role="alert" data-testid="task-form-server-error" className="text-sm text-bad">
+            Não foi possível criar a tarefa: {serverError} O que você digitou foi mantido.
           </p>
         )}
         <button type="submit" data-testid="task-submit" className="btn btn-light w-full" disabled={busy} aria-busy={busy}>

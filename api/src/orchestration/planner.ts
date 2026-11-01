@@ -1,5 +1,4 @@
 import { AgentKind, Task } from '../common/types';
-import { GatewayService } from '../gateway/gateway.service';
 
 export interface PlannedSubtask { agent: AgentKind; title: string; wave: number }
 
@@ -16,11 +15,10 @@ const classify = (clause: string): AgentKind => {
  * Planner loop. Splits the description into clauses, classifies each one by
  * agent kind and guarantees the minimal team: a researcher (wave 0), at least
  * one coder and one tester (wave 1, parallel) and a reviewer (wave 2).
- * The planner model call goes through the gateway on the cheap tier.
+ * Deterministic and free: no model call. A model-backed planner can replace plan()
+ * as long as it validates the answer and falls back to decompose().
  */
 export class Planner {
-  constructor(private readonly gateway: GatewayService) {}
-
   static decompose(task: Pick<Task, 'title' | 'description'>): PlannedSubtask[] {
     const clauses = task.description
       .split(/[\n.;]+|\s+e\s+(?=[a-záéíóú]+r\b)/i)
@@ -39,11 +37,8 @@ export class Planner {
     return work.sort((a, b) => a.wave - b.wave);
   }
 
-  async plan(task: Task): Promise<PlannedSubtask[]> {
-    await this.gateway.complete({
-      taskId: task.id, subtaskId: null, agent: 'planner', tier: 'cheap',
-      prompt: `AGENTE: planner\nTAREFA: ${task.title}\nDESCRICAO: ${task.description}`,
-    });
+  async plan(task: Task, signal?: AbortSignal): Promise<PlannedSubtask[]> {
+    signal?.throwIfAborted();
     return Planner.decompose(task);
   }
 }

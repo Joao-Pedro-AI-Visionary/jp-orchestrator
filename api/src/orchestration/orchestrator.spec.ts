@@ -47,7 +47,7 @@ describe('Orchestrator', () => {
     expect(outbox.filter((e) => e.type === 'task.completed')).toHaveLength(1);
     expect(outbox.filter((e) => e.type === 'tool.executed').length).toBeGreaterThan(0);
     const usage = await h.store.listUsage(task.id);
-    expect(new Set(usage.map((u) => u.agent))).toEqual(new Set(['planner', 'researcher', 'coder', 'tester', 'reviewer']));
+    expect(new Set(usage.map((u) => u.agent))).toEqual(new Set(['researcher', 'coder', 'tester', 'reviewer']));
     expect(done.spentUsd).toBeCloseTo(usage.reduce((s, u) => s + u.costUsd, 0), 6);
   });
 

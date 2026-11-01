@@ -37,6 +37,12 @@
     "preset": "ts-jest",
     "testEnvironment": "node",
     "rootDir": "src",
-    "testRegex": ".*\\.spec\\.ts$"
+    "testRegex": ".*\\.spec\\.ts$",
+    "setupFiles": [
+      "<rootDir>/test-utils/env.ts"
+    ]
+  },
+  "overrides": {
+    "multer": "2.5.0"
   }
 }

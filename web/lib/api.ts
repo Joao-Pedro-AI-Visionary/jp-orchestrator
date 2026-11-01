@@ -8,7 +8,21 @@ import type {
   WebhookItem,
 } from "./types";
 
-export const API_URL = (process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001").replace(/\/$/, "");
+/**
+ * Default: "/api" on the dashboard's own origin, proxied at runtime to API_INTERNAL_URL
+ * (app/api/[...path]/route.ts), so one image serves any host. NEXT_PUBLIC_API_URL (fixed
+ * at build time) makes the browser call the API directly instead.
+ */
+export const API_URL = (process.env.NEXT_PUBLIC_API_URL || "/api").replace(/\/$/, "");
+/**
+ * Demo key, inlined in the browser bundle at build time: anyone who can open the
+ * dashboard can read it. Keep the dashboard on localhost or behind your own login.
+ */
+const API_KEY = process.env.NEXT_PUBLIC_API_KEY ?? "";
+const authHeaders = (): Record<string, string> => (API_KEY ? { "x-api-key": API_KEY } : {});
+
+/** SSE URL. EventSource cannot send headers, so the key goes in the query (accepted only on /events). */
+export const EVENTS_URL = `${API_URL}/events${API_KEY ? `?api_key=${encodeURIComponent(API_KEY)}` : ""}`;
 
 export class ApiError extends Error {
   status: number;
@@ -24,7 +38,9 @@ function friendly(status: number, detail: string): string {
     case 422:
       return detail || "Dados inválidos. Revise os campos e tente novamente.";
     case 401:
-      return "Sessão não autorizada.";
+      return "Não autorizado: confira a NEXT_PUBLIC_API_KEY do dashboard.";
+    case 429:
+      return "Muitas requisições. Aguarde alguns segundos e tente novamente.";
     case 403:
       return "Você não tem permissão para esta ação.";
     case 404:
@@ -43,7 +59,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   try {
     res = await fetch(`${API_URL}${path}`, {
       ...init,
-      headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) },
+      headers: { "Content-Type": "application/json", ...authHeaders(), ...(init?.headers ?? {}) },
     });
   } catch {
     throw new ApiError(friendly(0, ""), 0);
@@ -93,4 +109,21 @@ export const api = {
   webhooks: () => request<WebhookItem[]>("/webhooks/inbox"),
 };
 
-export const CSV_URL = `${API_URL}/billing/report.csv`;
+/** Downloads the billing CSV with the API key (a plain link could not send the header). */
+export async function downloadBillingCsv(): Promise<void> {
+  let res: Response;
+  try {
+    res = await fetch(`${API_URL}/billing/report.csv`, { headers: authHeaders() });
+  } catch {
+    throw new ApiError(friendly(0, ""), 0);
+  }
+  if (!res.ok) throw new ApiError(friendly(res.status, ""), res.status);
+  const url = URL.createObjectURL(await res.blob());
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "jp-orchestrator-billing.csv";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}

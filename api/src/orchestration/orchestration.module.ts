@@ -30,7 +30,7 @@ import { TasksController } from './tasks.controller';
     { provide: TOOL_REGISTRY, useFactory: () => new StrategyRegistry('tool', BUILTIN_TOOLS) },
     { provide: AGENT_REGISTRY, useFactory: () => new StrategyRegistry<AgentStrategy>('agent', DEFAULT_AGENTS) },
     { provide: DURABLE_RUNTIME, inject: [STORE], useFactory: (store: Store) => new JournalRuntime(store) },
-    { provide: Planner, inject: [GatewayService], useFactory: (g: GatewayService) => new Planner(g) },
+    { provide: Planner, useFactory: () => new Planner() },
     {
       provide: Dispatcher,
       inject: [STORE, AGENT_REGISTRY, GatewayService, ToolInvoker, SHARED_MEMORY, EventBus],
