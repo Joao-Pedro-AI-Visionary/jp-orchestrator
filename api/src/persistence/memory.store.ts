@@ -1,16 +1,24 @@
 import {
   Approval, InboxEntry, OutboxEvent, Snapshot, Subtask, Task, ToolCall, Usage,
 } from '../common/types';
-import { nowIso, round6 } from '../common/util';
-import { Store, ToolClaim } from './store.port';
+import { envNumber, nowIso, round6 } from '../common/util';
+import { IdempotencyClaim, Store, ToolClaim, UsageBucket, UsageSummary } from './store.port';
 
 const clone = <T>(v: T): T => structuredClone(v);
 const TERMINAL = new Set(['completed', 'failed', 'rejected', 'budget_exceeded']);
+const MAX_INBOX = 500;
 
-/** In-process adapter. Single threaded event loop makes every method atomic. */
+/**
+ * In-process adapter. Single threaded event loop makes every method atomic.
+ * Bounded for long demo runs: past `maxTasks` the oldest finished tasks are dropped
+ * with everything that belongs to them (usage included), and the inbox keeps the
+ * newest MAX_INBOX entries.
+ */
 export class MemoryStore implements Store {
+  constructor(private readonly maxTasks = envNumber('MEMORY_STORE_MAX_TASKS', 500)) {}
+
   private tasks = new Map<string, Task>();
-  private idem = new Map<string, string>();
+  private idem = new Map<string, { taskId: string; bodyHash: string; at: number }>();
   private subtasks = new Map<string, Subtask>();
   private steps = new Map<string, unknown>();
   private approvals = new Map<string, Approval>();
@@ -24,13 +32,14 @@ export class MemoryStore implements Store {
 
   async ping() { return true; }
 
-  async createTask(task: Task, key: string | null) {
-    if (key && this.idem.has(key)) {
-      return { task: clone(this.tasks.get(this.idem.get(key)!)!), replay: true };
+  async createTask(task: Task, idem: IdempotencyClaim | null) {
+    const prev = idem ? this.idem.get(idem.key) : undefined;
+    if (idem && prev && Date.now() - prev.at < idem.ttlMs && this.tasks.has(prev.taskId)) {
+      return { task: clone(this.tasks.get(prev.taskId)!), replay: true, mismatch: prev.bodyHash !== idem.bodyHash };
     }
     this.tasks.set(task.id, clone(task));
-    if (key) this.idem.set(key, task.id);
-    return { task: clone(task), replay: false };
+    if (idem) this.idem.set(idem.key, { taskId: task.id, bodyHash: idem.bodyHash, at: Date.now() });
+    return { task: clone(task), replay: false, mismatch: false };
   }
 
   async getTask(id: string) {
@@ -65,7 +74,29 @@ export class MemoryStore implements Store {
     const t = this.tasks.get(id);
     if (!t) throw new Error(`Tarefa ${id} não encontrada`);
     if (TERMINAL.has(t.status)) return null;
-    return this.updateTaskWithEvent(id, patch, event);
+    const done = await this.updateTaskWithEvent(id, patch, event);
+    this.evict();
+    return done;
+  }
+
+  /** Drops the oldest finished tasks (and their rows) while over maxTasks. Active tasks stay. */
+  private evict() {
+    if (this.tasks.size <= this.maxTasks) return;
+    const finished = [...this.tasks.values()].filter((t) => TERMINAL.has(t.status))
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    for (const t of finished.slice(0, this.tasks.size - this.maxTasks)) {
+      this.tasks.delete(t.id);
+      this.leases.delete(t.id);
+      this.reserved.delete(t.id);
+      this.approvals.delete(t.id);
+      for (const [k, v] of this.idem) if (v.taskId === t.id) this.idem.delete(k);
+      for (const [k, s] of this.subtasks) if (s.taskId === t.id) this.subtasks.delete(k);
+      for (const k of this.steps.keys()) if (k.startsWith(`${t.id}:`)) this.steps.delete(k);
+      for (const [k, c] of this.toolCalls) if (c.taskId === t.id) this.toolCalls.delete(k);
+      for (const [k, e] of this.outbox) if (e.payload.taskId === t.id && e.status !== 'pending') this.outbox.delete(k);
+      this.usage = this.usage.filter((u) => u.taskId !== t.id);
+      this.snapshots = this.snapshots.filter((x) => x.taskId !== t.id);
+    }
   }
 
   async acquireTaskLease(taskId: string, owner: string, leaseMs: number) {
@@ -124,6 +155,13 @@ export class MemoryStore implements Store {
 
   async upsertApproval(a: Approval) {
     this.approvals.set(a.taskId, clone(a));
+    return clone(a);
+  }
+
+  async resolveApproval(taskId: string, status: 'approved' | 'rejected', note: string | null) {
+    const a = this.approvals.get(taskId);
+    if (!a || a.status !== 'pending') return null;
+    Object.assign(a, { status, note, resolvedAt: nowIso() });
     return clone(a);
   }
 
@@ -211,10 +249,36 @@ export class MemoryStore implements Store {
     return this.usage.filter((u) => !taskId || u.taskId === taskId).map(clone);
   }
 
+  async usageSummary(taskIds: string[]): Promise<UsageSummary> {
+    const group = (key: (u: Usage) => string, only?: Set<string>): UsageBucket[] => {
+      const map = new Map<string, UsageBucket>();
+      for (const u of this.usage) {
+        const k = key(u);
+        if (only && !only.has(k)) continue;
+        const b = map.get(k) ?? { key: k, tokens: 0, costUsd: 0, calls: 0 };
+        b.tokens += u.promptTokens + u.completionTokens;
+        b.costUsd = round6(b.costUsd + u.costUsd);
+        b.calls++;
+        map.set(k, b);
+      }
+      return [...map.values()];
+    };
+    return {
+      totals: {
+        tokens: this.usage.reduce((s, u) => s + u.promptTokens + u.completionTokens, 0),
+        costUsd: round6(this.usage.reduce((s, u) => s + u.costUsd, 0)),
+        calls: this.usage.length,
+        cacheHits: this.usage.filter((u) => u.cached).length,
+        savedUsd: round6(this.usage.reduce((s, u) => s + u.savedUsd, 0)),
+      },
+      byModel: group((u) => u.model),
+      byAgent: group((u) => u.agent),
+      byTask: group((u) => u.taskId, new Set(taskIds)),
+    };
+  }
+
   async addSnapshot(s: Snapshot) {
-    if (this.snapshots.some((x) => x.taskId === s.taskId && x.version === s.version)) {
-      throw new Error(`Snapshot v${s.version} já existe para ${s.taskId}`);
-    }
+    if (this.snapshots.some((x) => x.taskId === s.taskId && x.version === s.version)) return null;
     this.snapshots.push(clone(s));
     return clone(s);
   }
@@ -227,6 +291,7 @@ export class MemoryStore implements Store {
   async addInbox(e: InboxEntry) {
     if (e.eventId && this.inbox.some((x) => x.eventId === e.eventId)) return false;
     this.inbox.unshift(clone(e));
+    this.inbox.length = Math.min(this.inbox.length, MAX_INBOX);
     return true;
   }
 

@@ -1,4 +1,5 @@
 import { Inject, Injectable } from '@nestjs/common';
+import { DomainError } from '../common/errors';
 import { Tier } from '../common/types';
 import { PROVIDER_REGISTRY, SEMANTIC_CACHE } from '../common/tokens';
 import { envNumber, estimateTokens } from '../common/util';
@@ -6,7 +7,7 @@ import { BillingService } from '../billing/billing.service';
 import { EventBus } from '../events/event-bus';
 import { StrategyRegistry } from '../strategy/strategy-registry';
 import { LlmProvider, ProviderUnavailableError } from './llm-provider';
-import { costOf, ModelCatalog } from './model-catalog';
+import { costOf, ModelCatalog, TIER_RANK } from './model-catalog';
 import { SemanticCache } from './semantic-cache';
 
 export interface GatewayRequest {
@@ -41,13 +42,13 @@ export interface GatewayResponse {
   fallbackFrom: string | null;
 }
 
-export class TokenLimitError extends Error {
+export class TokenLimitError extends DomainError {
   constructor(readonly tokens: number, readonly limit: number) {
     super(`Prompt com ${tokens} tokens excede o limite de ${limit}`);
   }
 }
 
-export class AllModelsUnavailableError extends Error {
+export class AllModelsUnavailableError extends DomainError {
   constructor(tier: Tier) {
     super(`Nenhum modelo disponível para o tier ${tier}`);
   }
@@ -57,9 +58,10 @@ export class AllModelsUnavailableError extends Error {
  * AI Gateway: single entry point for every model call.
  * Order of the pipeline (cheapest checks first):
  *   1. token limit   2. semantic cache (scoped per tenant and task)
- *   3. routing (cheapest model of the tier)   4. per model: atomic budget reservation,
- *      provider call, fallback to the next model on outage
+ *   3. routing (cheapest model of the tier)   4. per model: skip models marked down,
+ *      atomic budget reservation, provider call, fallback to the next model on outage
  *   5. usage + cost recorded in billing, settling the reservation
+ *   6. cache store, only for a model at or above the requested tier
  */
 @Injectable()
 export class GatewayService {
@@ -103,6 +105,13 @@ export class GatewayService {
     let fallbackFrom: string | null = null;
     for (const model of chain) {
       req.signal?.throwIfAborted();
+      if (!model.healthy) {
+        // Known outage: skipped before reserving or calling, so the budget is checked
+        // against the model that will really answer.
+        this.stats.fallbacks++;
+        fallbackFrom = fallbackFrom ?? model.id;
+        continue;
+      }
       // Reserved per model: a fallback to a pricier model is checked against the budget too.
       const reserved = await this.billing.reserve(req.taskId, costOf(model, promptTokens, maxOut));
       let settled = false;
@@ -115,7 +124,11 @@ export class GatewayService {
         }, reserved);
         settled = true;
         const res = { text: out.text, model: model.id, cached: false, promptTokens, completionTokens: out.completionTokens, costUsd, fallbackFrom };
-        await this.cache.store(scope, req.prompt, { text: out.text, model: model.id, promptTokens, completionTokens: out.completionTokens, costUsd });
+        // A degraded answer from a lower tier is not cached: it would be served as the
+        // requested tier for the whole TTL, even after the right model is back.
+        if (TIER_RANK[model.tier] >= TIER_RANK[req.tier]) {
+          await this.cache.store(scope, req.prompt, { text: out.text, model: model.id, promptTokens, completionTokens: out.completionTokens, costUsd });
+        }
         this.emitCall(req, model.id, false, fallbackFrom, promptTokens + out.completionTokens, costUsd);
         return res;
       } catch (err) {

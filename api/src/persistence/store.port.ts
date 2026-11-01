@@ -4,6 +4,18 @@ import {
 
 export type ToolClaim = Pick<ToolCall, 'idempotencyKey' | 'taskId' | 'subtaskId' | 'tool' | 'args' | 'createdAt'>;
 
+/** Idempotency-Key of a create request, bound to the body and honored for `ttlMs`. */
+export interface IdempotencyClaim { key: string; bodyHash: string; ttlMs: number }
+
+export interface UsageBucket { key: string; tokens: number; costUsd: number; calls: number }
+export interface UsageSummary {
+  totals: { tokens: number; costUsd: number; calls: number; cacheHits: number; savedUsd: number };
+  byModel: UsageBucket[];
+  byAgent: UsageBucket[];
+  /** Only for the task ids asked for. */
+  byTask: UsageBucket[];
+}
+
 /**
  * Persistence port. PgStore is the production adapter; MemoryStore backs unit
  * tests and local runs without Postgres. Methods that must be atomic say so.
@@ -11,8 +23,12 @@ export type ToolClaim = Pick<ToolCall, 'idempotencyKey' | 'taskId' | 'subtaskId'
 export interface Store {
   ping(): Promise<boolean>;
 
-  /** Atomic on idempotencyKey: a repeated key returns the original task with replay=true. */
-  createTask(task: Task, idempotencyKey: string | null): Promise<{ task: Task; replay: boolean }>;
+  /**
+   * Atomic on the idempotency key: a repeated key returns the original task with
+   * replay=true, and mismatch=true when it was created from another body. A key older
+   * than its TTL is forgotten, so it creates a new task.
+   */
+  createTask(task: Task, idem: IdempotencyClaim | null): Promise<{ task: Task; replay: boolean; mismatch: boolean }>;
   getTask(id: string): Promise<Task | null>;
   listTasks(limit: number): Promise<Task[]>;
   listTasksByStatus(statuses: string[]): Promise<Task[]>;
@@ -53,6 +69,11 @@ export interface Store {
   putStep(taskId: string, key: string, value: unknown): Promise<{ inserted: boolean; value: unknown }>;
 
   upsertApproval(approval: Approval): Promise<Approval>;
+  /**
+   * Atomic: resolves the approval only while it is still pending. Null when it was
+   * already resolved (or never requested): of two concurrent decisions, one wins.
+   */
+  resolveApproval(taskId: string, status: 'approved' | 'rejected', note: string | null): Promise<Approval | null>;
   getApproval(taskId: string): Promise<Approval | null>;
 
   findToolCall(idempotencyKey: string): Promise<ToolCall | null>;
@@ -89,8 +110,11 @@ export interface Store {
    */
   recordUsage(usage: Usage, reservedUsd?: number): Promise<number>;
   listUsage(taskId?: string): Promise<Usage[]>;
+  /** Aggregated in the store (SQL GROUP BY in Postgres): no full scan sent to the app. */
+  usageSummary(taskIds: string[]): Promise<UsageSummary>;
 
-  addSnapshot(snapshot: Snapshot): Promise<Snapshot>;
+  /** Null, writing nothing, when the version is already taken (a concurrent commit won). */
+  addSnapshot(snapshot: Snapshot): Promise<Snapshot | null>;
   listSnapshots(taskId: string): Promise<Snapshot[]>;
 
   /** Idempotent on eventId (UNIQUE + ON CONFLICT DO NOTHING). Returns false when the event was already stored. */

@@ -2,6 +2,7 @@ import { BudgetExceededError } from '../billing/billing.service';
 import { nowIso } from '../common/util';
 import { gatewayHarness } from '../test-utils/harness';
 import { TokenLimitError } from './gateway.service';
+import { LlmProvider, MockProvider } from './llm-provider';
 import { cosine, embed } from './semantic-cache';
 
 async function seedTask(store: ReturnType<typeof gatewayHarness>['store'], budgetUsd = 1) {
@@ -53,6 +54,27 @@ describe('GatewayService', () => {
     h.catalog.setHealthy('mock-pro', false);
     const res = await h.gateway.complete(req('TAREFA: y', 'premium'));
     expect(res.model).toBe('mock-standard');
+  });
+
+  it('skips a model marked down without calling it or reserving for it (M3)', async () => {
+    const calls: string[] = [];
+    const spy: LlmProvider = { key: 'mock', complete: (m, p, max, sig) => { calls.push(m.id); return new MockProvider(0).complete(m, p, max, sig); } };
+    const h = gatewayHarness(spy);
+    await seedTask(h.store);
+    h.catalog.setHealthy('mock-mini', false);
+    const res = await h.gateway.complete(req('TAREFA: z'));
+    expect(calls).toEqual(['mock-lite']);
+    expect(res).toMatchObject({ model: 'mock-lite', fallbackFrom: 'mock-mini' });
+  });
+
+  it('does not cache a degraded answer from a lower tier under the requested tier (M9)', async () => {
+    const h = gatewayHarness();
+    await seedTask(h.store);
+    h.catalog.setHealthy('mock-pro', false);
+    expect(await h.gateway.complete(req('TAREFA: premium', 'premium'))).toMatchObject({ model: 'mock-standard', cached: false });
+    h.catalog.setHealthy('mock-pro', true);
+    expect(await h.gateway.complete(req('TAREFA: premium', 'premium'))).toMatchObject({ model: 'mock-pro', cached: false });
+    expect(await h.gateway.complete(req('TAREFA: premium', 'premium'))).toMatchObject({ model: 'mock-pro', cached: true });
   });
 
   it('rejects prompts above the token limit before spending anything', async () => {

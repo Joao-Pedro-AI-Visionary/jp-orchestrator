@@ -12,12 +12,18 @@ export interface SharedMemory {
   list(taskId: string): Promise<MemoryEntry[]>;
 }
 
+/** Bounded: keeps the `maxTasks` most recently written tasks (LRU). */
 export class InMemorySharedMemory implements SharedMemory {
   private data = new Map<string, Map<string, MemoryEntry>>();
 
+  constructor(private readonly maxTasks = 1000) {}
+
   async write(taskId: string, key: string, value: string, agent: string) {
-    if (!this.data.has(taskId)) this.data.set(taskId, new Map());
-    this.data.get(taskId)!.set(key, { key, value, agent, at: nowIso() });
+    const entries = this.data.get(taskId) ?? new Map<string, MemoryEntry>();
+    this.data.delete(taskId); // re-insert: Map order is the recency order
+    this.data.set(taskId, entries);
+    entries.set(key, { key, value, agent, at: nowIso() });
+    while (this.data.size > this.maxTasks) this.data.delete(this.data.keys().next().value!);
   }
 
   async read(taskId: string, key: string) {

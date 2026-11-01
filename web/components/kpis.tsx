@@ -3,19 +3,25 @@
 import { Coins, Cpu, DatabaseZap, PiggyBank, Shuffle } from "lucide-react";
 import type { Dashboard } from "@/lib/use-dashboard";
 import { int, usd } from "@/lib/format";
-import { AnimatedNumber, Skeleton } from "./ui";
+import { AnimatedNumber, ErrorNote, Skeleton } from "./ui";
 
 export function Kpis({ d }: { d: Dashboard }) {
   const t = d.billing?.totals;
+  const billingFailed = !t && !d.loading.billing && !!d.errors.billing;
+  const statsFailed = !d.stats && !d.loading.stats && !!d.errors.stats;
   const items = [
     { id: "kpi-cost", label: "Custo total", icon: Coins, value: t?.costUsd ?? 0, fmt: usd, glow: "rgba(255,200,0,0.35)", ready: !!t },
     { id: "kpi-tokens", label: "Tokens", icon: Cpu, value: t?.tokens ?? 0, fmt: int, glow: "rgba(255,200,0,0.35)", ready: !!t },
     { id: "kpi-cache", label: "Cache hits", icon: DatabaseZap, value: t?.cacheHits ?? 0, fmt: int, glow: "rgba(95,191,133,0.3)", ready: !!t },
     { id: "kpi-saved", label: "Economia (USD)", icon: PiggyBank, value: t?.savedUsd ?? 0, fmt: usd, glow: "rgba(95,191,133,0.3)", ready: !!t },
     { id: "kpi-fallbacks", label: "Fallbacks do gateway", icon: Shuffle, value: d.stats?.fallbacks ?? 0, fmt: int, glow: "rgba(255,122,0,0.3)", ready: !!d.stats },
-  ];
+  ].map((k) => ({ ...k, failed: k.id === "kpi-fallbacks" ? statsFailed : billingFailed }));
   return (
-    <section aria-label="Indicadores" data-testid="kpi-row" className="grid grid-cols-2 gap-4 lg:grid-cols-5">
+    <section aria-label="Indicadores" data-testid="kpi-row" className="flex flex-col gap-4">
+      {(billingFailed || statsFailed) && (
+        <ErrorNote text={d.errors.billing ?? d.errors.stats ?? "Falha ao carregar os indicadores."} onRetry={d.reloadAll} testId="kpi-error" />
+      )}
+      <div className="grid grid-cols-2 gap-4 lg:grid-cols-5">
       {items.map((k) => (
         <div key={k.id} className="card kpi-accent p-4" style={{ ["--glow" as string]: k.glow, ["--accent" as string]: k.glow.replace(/0\.\d+\)$/, "1)") }}>
           <div className="eyebrow flex items-center gap-2">
@@ -23,10 +29,19 @@ export function Kpis({ d }: { d: Dashboard }) {
             {k.label}
           </div>
           <p className="mt-3 font-heading text-2xl font-bold tracking-tight text-white sm:text-3xl">
-            {k.ready ? <AnimatedNumber value={k.value} format={k.fmt} testId={k.id} /> : <Skeleton className="h-9 w-24" />}
+            {k.ready ? (
+              <AnimatedNumber value={k.value} format={k.fmt} testId={k.id} />
+            ) : k.failed ? (
+              <span className="text-base font-medium text-neutral-400" data-testid={`${k.id}-unavailable`}>
+                indisponível
+              </span>
+            ) : (
+              <Skeleton className="h-9 w-24" />
+            )}
           </p>
         </div>
       ))}
+      </div>
     </section>
   );
 }

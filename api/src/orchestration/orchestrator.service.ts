@@ -1,5 +1,6 @@
 import { hostname } from 'node:os';
 import { Logger } from '@nestjs/common';
+import { DomainError, publicMessage, ReviewRejectedError } from '../common/errors';
 import { Subtask, Task, TaskStatus } from '../common/types';
 import { envNumber, newId, nowIso, TimeoutError, withDeadline } from '../common/util';
 import { AgentResult } from '../agents/agent-strategy';
@@ -20,7 +21,8 @@ export type RunOutcome = 'completed' | 'paused' | 'failed' | 'rejected' | 'budge
 const ACTIVE: TaskStatus[] = ['queued', 'planning', 'running', 'merging'];
 const TERMINAL: TaskStatus[] = ['completed', 'rejected', 'budget_exceeded'];
 
-export class LeaseLostError extends Error {
+/** Expected under replicas, not a bug: a DomainError so it is not logged as an internal error. */
+export class LeaseLostError extends DomainError {
   constructor(taskId: string) {
     super(`Lease da tarefa ${taskId} perdido: outro executor assumiu`);
   }
@@ -74,6 +76,16 @@ export class Orchestrator {
   /** True while this process or any other replica holds the task lease. */
   async isRunningAnywhere(taskId: string): Promise<boolean> {
     return this.inFlight.has(taskId) || this.store.isTaskLeased(taskId);
+  }
+
+  /**
+   * A failed task can be resumed unless it failed because the reviewer still rejected
+   * after the last correction round: that verdict is journaled, so a resume would
+   * replay it and fail the same way.
+   */
+  async canResume(taskId: string): Promise<boolean> {
+    const last = await this.store.getStep(taskId, `review:${MAX_CORRECTION_ROUNDS}`);
+    return (last?.value as AgentResult | null)?.verdict?.approved !== false;
   }
 
   /**
@@ -162,12 +174,12 @@ export class Orchestrator {
     const coders = work.filter((s) => s.agent === 'coder');
     for (let round = 0; ; round++) {
       const review = await step(`review:${round}`, () =>
-        this.dispatcher.runOne(task, reviewer, { attempt: round + 1, feedback: null, signal }));
+        this.dispatcher.runOne(task, reviewer, { attempt: round + 1, feedback: null, signal, team: subtasks }));
       results[reviewer.id] = review;
       await this.snapshot(ctx, step, `review-${round + 1}`, { verdict: review.verdict ?? null });
       if (review.verdict?.approved) break;
       if (round >= MAX_CORRECTION_ROUNDS) {
-        throw new Error(`Revisão reprovada após ${MAX_CORRECTION_ROUNDS} rodadas de correção: ${review.verdict?.feedback}`);
+        throw new ReviewRejectedError(MAX_CORRECTION_ROUNDS, review.verdict?.feedback);
       }
       task = await this.store.updateTask(taskId, { correctionRounds: round + 1 });
       this.bus.emit('task.status', taskId, { status: task.status, correctionRounds: round + 1 });
@@ -207,8 +219,14 @@ export class Orchestrator {
     return subtasks.filter((s) => results[s.id]).map((s) => ({ agent: s.agent, title: s.title, model: results[s.id].model }));
   }
 
+  /**
+   * Labels are unique per task. A crash after the commit but before the journal write
+   * replays this step: it finds its own snapshot and does not append a second one.
+   */
   private async snapshot(ctx: DurableContext, step: Step, label: string, extra: Record<string, unknown>) {
     await step(`snapshot:${label}`, async () => {
+      const done = (await this.context.history(ctx.executionId)).find((s) => s.label === label);
+      if (done) return done.version;
       const [task, memory] = await Promise.all([this.mustGet(ctx.executionId), this.memory.list(ctx.executionId)]);
       const s = await this.context.commit(ctx.executionId, label, {
         stage: label, status: task.status, spentUsd: task.spentUsd,
@@ -227,7 +245,9 @@ export class Orchestrator {
         this.bus.emit('subtask.status', taskId, { subtaskId: s.id, agent: s.agent, title: s.title, status: 'cancelled' });
       }
     }
-    const done = await this.finish(taskId, status, { error: err.message }, budget ? 'task.budget_exceeded' : 'task.failed');
+    // Domain message only (timeout, budget, review...): internals go to the log with a ref id.
+    const error = publicMessage(err, `tarefa ${taskId}`);
+    const done = await this.finish(taskId, status, { error }, budget ? 'task.budget_exceeded' : 'task.failed');
     if (!done) return (await this.mustGet(taskId)).status as RunOutcome;
     return budget ? 'budget_exceeded' : 'failed';
   }

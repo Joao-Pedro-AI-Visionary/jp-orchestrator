@@ -1,3 +1,4 @@
+import { UnauthorizedException } from '@nestjs/common';
 import { MemoryStore } from '../persistence/memory.store';
 import { EventBus } from './event-bus';
 import { WebhooksController } from './events.module';
@@ -26,13 +27,20 @@ describe('WebhooksController.receive', () => {
     expect((await store.listInbox(50)).map((e) => e.eventId)).toEqual(['e2', 'e1']);
   });
 
-  it('does not dedupe on an unsigned or mismatched event id, so a forged request cannot shadow a real event', async () => {
+  it('rejects an unsigned or badly signed request with 401 and stores nothing (M2)', async () => {
     const { store, relay, controller } = setup();
-    expect(await controller.receive(delivery(relay.secret, 'e1', 'e1', 't=1,v1=bad'))).toMatchObject({ verified: false, duplicate: false });
+    await expect(controller.receive(delivery(relay.secret, 'e1', 'e1', 't=1,v1=bad'))).rejects.toBeInstanceOf(UnauthorizedException);
+    await expect(controller.receive(delivery(relay.secret, 'e1', 'e1', ''))).rejects.toBeInstanceOf(UnauthorizedException);
+    await expect(controller.receive(delivery('another-secret-0123456789abcdef0123', 'e1'))).rejects.toBeInstanceOf(UnauthorizedException);
+    expect(await store.listInbox(50)).toHaveLength(0);
+  });
+
+  it('does not dedupe on a mismatched event id header, so it cannot shadow a real event', async () => {
+    const { store, relay, controller } = setup();
     expect(await controller.receive(delivery(relay.secret, 'e1', 'other'))).toMatchObject({ verified: true, duplicate: false });
     expect(await controller.receive(delivery(relay.secret, 'e1'))).toEqual({ received: true, verified: true, duplicate: false });
     const inbox = await store.listInbox(50);
-    expect(inbox).toHaveLength(3);
+    expect(inbox).toHaveLength(2);
     expect(inbox.filter((e) => e.eventId === 'e1')).toHaveLength(1);
   });
 });

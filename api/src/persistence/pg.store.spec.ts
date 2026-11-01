@@ -34,6 +34,7 @@ describe('PgStore (PGlite)', () => {
       INSERT INTO webhook_inbox (id, event, verified, signature, payload) VALUES (gen_random_uuid(), 'e', true, 's', '{}'), (gen_random_uuid(), 'e', true, 's', '{}');`);
     expect(await store.migrate(MIGRATIONS)).toEqual([
       '0001_webhook_inbox_event_id.sql', '0002_tool_calls_started_lease.sql', '0003_task_lease_budget_reservation.sql',
+      '0004_idempotency_body_hash.sql',
     ]);
     expect(await store.migrate(MIGRATIONS)).toEqual([]);
     await ctx.db.exec(SCHEMA);

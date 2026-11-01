@@ -1,6 +1,6 @@
 "use client";
 
-import { motion } from "motion/react";
+import { motion, useReducedMotion } from "motion/react";
 import { Download } from "lucide-react";
 import type { Dashboard } from "@/lib/use-dashboard";
 import { TASK_STATUS } from "@/lib/status";
@@ -8,6 +8,8 @@ import { int, usd } from "@/lib/format";
 import { EmptyState, ErrorNote, Pill, Skeleton } from "./ui";
 
 function Bars({ title, rows, testId, tone }: { title: string; rows: { name: string; cost: number; tokens: number }[]; testId: string; tone: string }) {
+  // Width is not a transform, so MotionConfig reducedMotion does not cover it.
+  const reduce = useReducedMotion();
   const max = Math.max(...rows.map((r) => r.cost), 0.000001);
   return (
     <div>
@@ -27,7 +29,7 @@ function Bars({ title, rows, testId, tone }: { title: string; rows: { name: stri
                 </span>
               </div>
               <div className="mt-1 h-2.5 overflow-hidden rounded-full bg-white/10">
-                <motion.div className={`h-full rounded-full ${tone}`} initial={{ width: 0 }} animate={{ width: `${(r.cost / max) * 100}%` }} transition={{ duration: 0.7, ease: "easeOut" }} />
+                <motion.div className={`h-full rounded-full ${tone}`} initial={reduce ? false : { width: 0 }} animate={{ width: `${(r.cost / max) * 100}%` }} transition={{ duration: reduce ? 0 : 0.7, ease: "easeOut" }} />
               </div>
             </li>
           ))}

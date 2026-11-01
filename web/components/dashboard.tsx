@@ -1,6 +1,7 @@
 "use client";
 
 import { useRef } from "react";
+import { MotionConfig } from "motion/react";
 import { useDashboard } from "@/lib/use-dashboard";
 import { Header } from "./header";
 import { Kpis } from "./kpis";
@@ -21,8 +22,10 @@ export function Dashboard() {
     titleRef.current?.focus({ preventScroll: true });
   }
 
+  // reducedMotion="user": every motion animation (billing bars, task cards, toasts, timeline)
+  // drops transform/layout animation when the OS asks for reduced motion.
   return (
-    <>
+    <MotionConfig reducedMotion="user">
     <div className="topbar">
       <div className="mx-auto max-w-[1400px] px-4 py-3 sm:px-6">
         <Header d={d} onNewTask={focusForm} />
@@ -56,6 +59,6 @@ export function Dashboard() {
       </div>
       <Toasts d={d} />
     </div>
-    </>
+    </MotionConfig>
   );
 }

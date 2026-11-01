@@ -5,9 +5,10 @@ services:
     image: postgres:17.6-alpine
     environment:
       POSTGRES_USER: jp
-      POSTGRES_PASSWORD: jp
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?defina POSTGRES_PASSWORD (openssl rand -hex 32)}
       POSTGRES_DB: orchestrator
-    ports: ["5432:5432"]
+    # Host loopback only (for running the API outside Docker). The api service uses the compose network.
+    ports: ["127.0.0.1:5432:5432"]
     volumes: [pgdata:/var/lib/postgresql/data]
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U jp -d orchestrator"]
@@ -16,9 +17,12 @@ services:
 
   redis:
     image: redis:7.4.6-alpine
-    ports: ["6379:6379"]
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?defina REDIS_PASSWORD (openssl rand -hex 32)}
+    command: ["sh", "-c", "exec redis-server --requirepass \"$$REDIS_PASSWORD\""]
+    ports: ["127.0.0.1:6379:6379"]
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD-SHELL", "redis-cli --no-auth-warning -a \"$$REDIS_PASSWORD\" ping | grep -q PONG"]
       interval: 3s
       retries: 20
 
@@ -26,8 +30,9 @@ services:
     build: ./api
     environment:
       PORT: 3001
-      DATABASE_URL: postgres://jp:jp@postgres:5432/orchestrator
-      REDIS_URL: redis://redis:6379
+      # Hex passwords (openssl rand -hex) are URL safe.
+      DATABASE_URL: postgres://jp:${POSTGRES_PASSWORD}@postgres:5432/orchestrator
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379
       WEBHOOK_URL: http://api:3001/webhooks/inbox
       WEBHOOK_SECRET: ${WEBHOOK_SECRET:?defina WEBHOOK_SECRET (openssl rand -hex 32)}
       API_KEY: ${API_KEY:?defina API_KEY (openssl rand -hex 32)}
@@ -48,9 +53,12 @@ services:
     build:
       context: ./web
       args:
-        NEXT_PUBLIC_API_URL: http://localhost:3001
         # Demo only: inlined in the browser bundle.
         NEXT_PUBLIC_API_KEY: ${API_KEY:?defina API_KEY (openssl rand -hex 32)}
+    environment:
+      # Read at runtime by the /api proxy: the browser calls the dashboard's own origin,
+      # so the same image works from any host and needs no cross-origin CORS.
+      API_INTERNAL_URL: http://api:3001
     ports: ["127.0.0.1:3000:3000"]
     depends_on:
       api: { condition: service_healthy }

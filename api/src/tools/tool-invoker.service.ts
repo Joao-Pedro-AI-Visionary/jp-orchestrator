@@ -2,6 +2,7 @@ import { Inject, Injectable } from '@nestjs/common';
 import { OutboxEvent } from '../common/types';
 import { STORE, TOOL_REGISTRY } from '../common/tokens';
 import { retryConfig } from '../common/retry-horizon';
+import { DomainError } from '../common/errors';
 import { canonicalJson, newId, nowIso, sha256, sleep, TimeoutError, withTimeout } from '../common/util';
 import { Store } from '../persistence/store.port';
 import { KeyedStrategy, StrategyRegistry } from '../strategy/strategy-registry';
@@ -24,14 +25,14 @@ export interface ToolHandler extends KeyedStrategy {
 }
 
 /** Another worker kept a live lease on this call for longer than one lease. Retry later. */
-export class ToolCallInProgressError extends Error {
+export class ToolCallInProgressError extends DomainError {
   constructor(readonly key: string) {
     super(`Ferramenta com Idempotency-Key ${key} ainda em execução`);
   }
 }
 
 /** The call ran out of attempts or outlived its idempotency key: re-running it is no longer safe. */
-export class ToolCallRefusedError extends Error {
+export class ToolCallRefusedError extends DomainError {
   constructor(readonly key: string, reason: string) {
     super(`Ferramenta com Idempotency-Key ${key} recusada: ${reason}`);
   }

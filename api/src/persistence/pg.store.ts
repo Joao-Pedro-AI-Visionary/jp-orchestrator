@@ -4,7 +4,7 @@ import { Pool, PoolClient } from 'pg';
 import {
   Approval, InboxEntry, OutboxEvent, Snapshot, Subtask, Task, ToolCall, Usage,
 } from '../common/types';
-import { Store, ToolClaim } from './store.port';
+import { IdempotencyClaim, Store, ToolClaim, UsageBucket, UsageSummary } from './store.port';
 
 type Row = Record<string, unknown>;
 const iso = (v: unknown): string | null => (v ? new Date(v as string).toISOString() : null);
@@ -109,17 +109,21 @@ export class PgStore implements Store {
 
   static async connect(url: string): Promise<PgStore> {
     const pool = new Pool({ connectionString: url, max: 10 });
-    await pool.query(readFileSync(join(__dirname, 'schema.sql'), 'utf8'));
     const store = new PgStore(pool);
-    await store.migrate(join(__dirname, 'migrations'));
+    await store.migrate(join(__dirname, 'migrations'), readFileSync(join(__dirname, 'schema.sql'), 'utf8'));
     return store;
   }
 
-  /** Applies migrations/*.sql in name order, once each. The advisory lock serializes concurrent boots. */
-  async migrate(dir: string): Promise<string[]> {
+  /**
+   * Applies the idempotent base schema (when given) and then migrations/*.sql in name
+   * order, once each, all under one advisory lock: concurrent boots never race on
+   * CREATE TABLE IF NOT EXISTS.
+   */
+  async migrate(dir: string, baseSchema?: string): Promise<string[]> {
     const files = readdirSync(dir).filter((f) => f.endsWith('.sql')).sort();
     return this.tx(async (c) => {
       await c.query('SELECT pg_advisory_xact_lock(7262001)');
+      if (baseSchema) await c.query(baseSchema);
       await c.query('CREATE TABLE IF NOT EXISTS schema_migrations (version text PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())');
       const done = new Set((await c.query('SELECT version FROM schema_migrations')).rows.map((r) => r.version as string));
       const applied: string[] = [];
@@ -153,18 +157,29 @@ export class PgStore implements Store {
     try { await this.pool.query('SELECT 1'); return true; } catch { return false; }
   }
 
-  async createTask(t: Task, key: string | null) {
-    const ins = await this.pool.query(
-      `INSERT INTO tasks (id, title, description, status, budget_usd, spent_usd, requires_approval,
-        correction_rounds, result, error, idempotency_key, created_at, updated_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
-       ON CONFLICT (idempotency_key) DO NOTHING RETURNING *`,
-      [t.id, t.title, t.description, t.status, t.budgetUsd, t.spentUsd, t.requiresApproval,
-        t.correctionRounds, null, null, key, t.createdAt, t.updatedAt],
-    );
-    if (ins.rows[0]) return { task: toTask(ins.rows[0]), replay: false };
-    const existing = await this.pool.query('SELECT * FROM tasks WHERE idempotency_key = $1', [key]);
-    return { task: toTask(existing.rows[0]), replay: true };
+  createTask(t: Task, idem: IdempotencyClaim | null) {
+    return this.tx(async (c) => {
+      // A key past its TTL is forgotten (the task stays): the same key may create a new task.
+      if (idem) {
+        await c.query(
+          `UPDATE tasks SET idempotency_key = NULL
+           WHERE idempotency_key = $1 AND created_at <= now() - ($2 || ' milliseconds')::interval`,
+          [idem.key, String(idem.ttlMs)],
+        );
+      }
+      const ins = await c.query(
+        `INSERT INTO tasks (id, title, description, status, budget_usd, spent_usd, requires_approval,
+          correction_rounds, result, error, idempotency_key, idempotency_hash, created_at, updated_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+         ON CONFLICT (idempotency_key) DO NOTHING RETURNING *`,
+        [t.id, t.title, t.description, t.status, t.budgetUsd, t.spentUsd, t.requiresApproval,
+          t.correctionRounds, null, null, idem?.key ?? null, idem?.bodyHash ?? null, t.createdAt, t.updatedAt],
+      );
+      if (ins.rows[0]) return { task: toTask(ins.rows[0]), replay: false, mismatch: false };
+      const existing = (await c.query('SELECT * FROM tasks WHERE idempotency_key = $1', [idem!.key])).rows[0];
+      const hash = existing.idempotency_hash as string | null;
+      return { task: toTask(existing), replay: true, mismatch: hash !== null && hash !== idem!.bodyHash };
+    });
   }
 
   async getTask(id: string) {
@@ -301,6 +316,15 @@ export class PgStore implements Store {
     return toApproval(r.rows[0]);
   }
 
+  async resolveApproval(taskId: string, status: 'approved' | 'rejected', note: string | null) {
+    const r = await this.pool.query(
+      `UPDATE approvals SET status = $2, note = $3, resolved_at = now()
+       WHERE task_id = $1 AND status = 'pending' RETURNING *`,
+      [taskId, status, note],
+    );
+    return r.rows[0] ? toApproval(r.rows[0]) : null;
+  }
+
   async getApproval(taskId: string) {
     const r = await this.pool.query('SELECT * FROM approvals WHERE task_id = $1', [taskId]);
     return r.rows[0] ? toApproval(r.rows[0]) : null;
@@ -407,12 +431,34 @@ export class PgStore implements Store {
     return r.rows.map(toUsage);
   }
 
+  async usageSummary(taskIds: string[]): Promise<UsageSummary> {
+    const sums = 'sum(prompt_tokens + completion_tokens) AS tokens, sum(cost_usd) AS cost, count(*) AS calls';
+    const bucket = (r: Row): UsageBucket => ({ key: r.key as string, tokens: num(r.tokens), costUsd: num(r.cost), calls: num(r.calls) });
+    const [totals, byModel, byAgent, byTask] = await Promise.all([
+      this.pool.query(`SELECT coalesce(sum(prompt_tokens + completion_tokens), 0) AS tokens, coalesce(sum(cost_usd), 0) AS cost,
+        count(*) AS calls, count(*) FILTER (WHERE cached) AS hits, coalesce(sum(saved_usd), 0) AS saved FROM usage_records`),
+      this.pool.query(`SELECT model AS key, ${sums} FROM usage_records GROUP BY model`),
+      this.pool.query(`SELECT agent AS key, ${sums} FROM usage_records GROUP BY agent`),
+      taskIds.length
+        ? this.pool.query(`SELECT task_id::text AS key, ${sums} FROM usage_records WHERE task_id = ANY($1::uuid[]) GROUP BY task_id`, [taskIds])
+        : Promise.resolve({ rows: [] as Row[] }),
+    ]);
+    const t = totals.rows[0];
+    return {
+      totals: { tokens: num(t.tokens), costUsd: num(t.cost), calls: num(t.calls), cacheHits: num(t.hits), savedUsd: num(t.saved) },
+      byModel: byModel.rows.map(bucket),
+      byAgent: byAgent.rows.map(bucket),
+      byTask: byTask.rows.map(bucket),
+    };
+  }
+
   async addSnapshot(s: Snapshot) {
-    await this.pool.query(
-      'INSERT INTO context_snapshots (task_id, version, hash, parent_hash, label, content, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7)',
+    const r = await this.pool.query(
+      `INSERT INTO context_snapshots (task_id, version, hash, parent_hash, label, content, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7)
+       ON CONFLICT (task_id, version) DO NOTHING`,
       [s.taskId, s.version, s.hash, s.parentHash, s.label, JSON.stringify(s.content), s.createdAt],
     );
-    return s;
+    return r.rowCount === 1 ? s : null;
   }
 
   async listSnapshots(taskId: string) {

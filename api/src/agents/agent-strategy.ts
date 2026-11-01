@@ -14,6 +14,8 @@ export interface AgentContext {
   memory: SharedMemory;
   /** Aborted on task timeout, subagent timeout or lost lease. */
   signal?: AbortSignal;
+  /** Every subtask of the plan, so the reviewer knows which code entries to expect. */
+  team?: Subtask[];
 }
 
 export interface AgentResult {

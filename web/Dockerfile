@@ -5,7 +5,8 @@ RUN npm ci
 
 FROM node:22-alpine AS build
 WORKDIR /app
-ARG NEXT_PUBLIC_API_URL=http://localhost:3001
+# Empty: the browser calls /api on the dashboard origin, proxied at runtime to API_INTERNAL_URL.
+ARG NEXT_PUBLIC_API_URL=
 ARG NEXT_PUBLIC_API_KEY=
 ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL \
     NEXT_PUBLIC_API_KEY=$NEXT_PUBLIC_API_KEY \
@@ -19,7 +20,8 @@ WORKDIR /app
 ENV NODE_ENV=production \
     NEXT_TELEMETRY_DISABLED=1 \
     PORT=3000 \
-    HOSTNAME=0.0.0.0
+    HOSTNAME=0.0.0.0 \
+    API_INTERNAL_URL=http://api:3001
 RUN addgroup -S app && adduser -S app -G app
 COPY --from=build --chown=app:app /app/public ./public
 COPY --from=build --chown=app:app /app/.next/standalone ./

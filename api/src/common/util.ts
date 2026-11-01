@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { DomainError } from './errors';
 
 export const newId = (): string => randomUUID();
 export const nowIso = (): string => new Date().toISOString();
@@ -24,7 +25,7 @@ export const sleep = (ms: number, signal?: AbortSignal): Promise<void> => new Pr
   signal?.addEventListener('abort', onAbort, { once: true });
 });
 
-export class TimeoutError extends Error {
+export class TimeoutError extends DomainError {
   constructor(label: string, ms: number) {
     super(`${label} excedeu o timeout de ${ms}ms`);
   }

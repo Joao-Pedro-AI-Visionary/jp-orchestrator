@@ -1,5 +1,6 @@
 import { KeyedStrategy } from '../strategy/strategy-registry';
 import { envNumber, estimateTokens, sha256, sleep } from '../common/util';
+import { DomainError } from '../common/errors';
 import { ModelSpec } from './model-catalog';
 
 export interface Completion { text: string; completionTokens: number }
@@ -10,7 +11,7 @@ export interface LlmProvider extends KeyedStrategy {
   complete(model: ModelSpec, prompt: string, maxOutputTokens: number, signal?: AbortSignal): Promise<Completion>;
 }
 
-export class ProviderUnavailableError extends Error {
+export class ProviderUnavailableError extends DomainError {
   constructor(readonly modelId: string) {
     super(`Modelo indisponível: ${modelId}`);
   }

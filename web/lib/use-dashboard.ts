@@ -23,17 +23,40 @@ export interface Toast {
 
 const errMsg = (e: unknown) => (e instanceof Error ? e.message : "Erro inesperado.");
 
-const EVENT_LABEL: Record<string, string> = {
-  "task.created": "Nova tarefa criada",
-  "task.status": "Status da tarefa atualizado",
-  "subtask.status": "Subagente atualizado",
-  "gateway.call": "Chamada ao gateway registrada",
-  "usage.recorded": "Consumo registrado",
-  "snapshot.created": "Novo snapshot de contexto",
-  "approval.requested": "Aprovação humana solicitada",
-  "approval.resolved": "Aprovação resolvida",
-  "webhook.delivered": "Webhook recebido",
+const STATUS_ANNOUNCE: Record<string, string> = {
+  completed: "concluída",
+  failed: "falhou",
+  rejected: "rejeitada",
+  budget_exceeded: "parou por orçamento",
+  awaiting_approval: "aguarda aprovação humana",
 };
+
+/**
+ * What the screen reader hears: only task-level transitions that ask for attention
+ * (finished, failed, waiting for a human). Per-call and per-subagent events and the
+ * heartbeat stay silent; the polite region gets at most one coalesced message per window.
+ */
+function announcement(ev: ServerEvent): string | null {
+  if (ev.type === "task.created") return "Nova tarefa criada";
+  if (ev.type === "approval.requested") return "Aprovação humana solicitada";
+  if (ev.type === "task.status") {
+    const label = STATUS_ANNOUNCE[String(ev.payload?.status ?? "")];
+    return label ? `Tarefa ${label}` : null;
+  }
+  return null;
+}
+
+const ANNOUNCE_WINDOW_MS = 1500;
+// Billing is aggregated on the server, but every open tab polls it: refresh it at most this often.
+const BILLING_THROTTLE_MS = 2500;
+const THROTTLE_MS = 200;
+
+export interface TaskInput {
+  title: string;
+  description: string;
+  budgetUsd: number;
+  requiresApproval: boolean;
+}
 
 export function useDashboard() {
   const [health, setHealth] = useState<Health | null>(null);
@@ -63,6 +86,8 @@ export function useDashboard() {
   const selectedRef = useRef<string | null>(null);
   const timers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
   const seq = useRef(0);
+  const announceQueue = useRef<string[]>([]);
+  const announceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const pushToast = useCallback((kind: Toast["kind"], text: string) => {
     const id = ++seq.current;
@@ -132,18 +157,35 @@ export function useDashboard() {
   useEffect(() => {
     // Throttle, not debounce: under a steady event stream a debounce would only
     // refresh after the stream goes quiet, hiding the live parallel run.
-    const schedule = (key: string, fn: () => void) => {
+    const schedule = (key: string, fn: () => void, ms = THROTTLE_MS) => {
       if (timers.current.has(key)) return;
       timers.current.set(
         key,
         setTimeout(() => {
           timers.current.delete(key);
           fn();
-        }, 200),
+        }, ms),
       );
     };
+    const announce = (text: string) => {
+      announceQueue.current.push(text);
+      if (announceTimer.current) return;
+      announceTimer.current = setTimeout(() => {
+        const queued = announceQueue.current;
+        announceQueue.current = [];
+        announceTimer.current = null;
+        const unique = [...new Set(queued)];
+        setLiveMessage(queued.length === 1 ? queued[0] : `${queued.length} atualizações: ${unique.join("; ")}`);
+      }, ANNOUNCE_WINDOW_MS);
+    };
     const es = new EventSource(EVENTS_URL);
-    es.onopen = () => setLive(true);
+    let opened = false;
+    es.onopen = () => {
+      setLive(true);
+      // EventSource reconnects on its own; events sent while it was down are lost, so resync.
+      if (opened) reloadAll();
+      opened = true;
+    };
     es.onerror = () => setLive(false);
     es.onmessage = (msg) => {
       let ev: ServerEvent;
@@ -152,14 +194,16 @@ export function useDashboard() {
       } catch {
         return;
       }
-      setLiveMessage(EVENT_LABEL[ev.type] ?? ev.type);
+      if (ev.type === "heartbeat") return;
+      const spoken = announcement(ev);
+      if (spoken) announce(spoken);
       const sel = selectedRef.current;
       const mine = sel !== null && ev.taskId === sel;
       switch (ev.type) {
         case "task.created":
         case "task.status":
           schedule("tasks", () => void refreshTasks());
-          schedule("billing", () => void refreshBilling());
+          schedule("billing", () => void refreshBilling(), BILLING_THROTTLE_MS);
           break;
         case "gateway.call": {
           const p = ev.payload ?? {};
@@ -178,7 +222,7 @@ export function useDashboard() {
           break;
         }
         case "usage.recorded":
-          schedule("billing", () => void refreshBilling());
+          schedule("billing", () => void refreshBilling(), BILLING_THROTTLE_MS);
           schedule("tasks", () => void refreshTasks());
           break;
         case "webhook.delivered":
@@ -194,16 +238,21 @@ export function useDashboard() {
       es.close();
       pendingTimers.forEach(clearTimeout);
       pendingTimers.clear();
+      if (announceTimer.current) clearTimeout(announceTimer.current);
+      announceTimer.current = null;
     };
-  }, [refreshTasks, refreshBilling, refreshStats, refreshWebhooks, refreshDetail]);
+  }, [reloadAll, refreshTasks, refreshBilling, refreshStats, refreshWebhooks, refreshDetail]);
 
+  /** Runs `fn` with `pending[key]` set. Returns false (after a toast) when it threw. */
   const withPending = useCallback(
-    async (key: string, fn: () => Promise<void>) => {
+    async (key: string, fn: () => Promise<void>): Promise<boolean> => {
       setPending((p) => ({ ...p, [key]: true }));
       try {
         await fn();
+        return true;
       } catch (err) {
         pushToast("error", errMsg(err));
+        return false;
       } finally {
         setPending((p) => ({ ...p, [key]: false }));
       }
@@ -211,20 +260,33 @@ export function useDashboard() {
     [pushToast],
   );
 
+  /**
+   * Resolves to null on success or to the error message, so the form keeps what was typed.
+   * The caller owns the Idempotency-Key: reusing it on a retry of the same draft means a
+   * request that reached the API but lost its response never creates a second task.
+   */
   const createTask = useCallback(
-    (body: { title: string; description: string; budgetUsd: number; requiresApproval: boolean }) =>
-      withPending("create", async () => {
-        const task = await api.createTask(body, crypto.randomUUID());
+    async (body: TaskInput, idempotencyKey: string): Promise<string | null> => {
+      setPending((p) => ({ ...p, create: true }));
+      try {
+        const task = await api.createTask(body, idempotencyKey);
         pushToast("success", "Tarefa criada. Os subagentes já estão sendo planejados.");
         await refreshTasks();
         select(task.id);
-      }),
-    [withPending, pushToast, refreshTasks, select],
+        return null;
+      } catch (err) {
+        return errMsg(err);
+      } finally {
+        setPending((p) => ({ ...p, create: false }));
+      }
+    },
+    [pushToast, refreshTasks, select],
   );
 
+  /** Pending state is per task (`approve:<id>`), so acting on one task never locks another. */
   const taskAction = useCallback(
     (id: string, kind: "approve" | "reject" | "resume", note?: string) =>
-      withPending(kind, async () => {
+      withPending(`${kind}:${id}`, async () => {
         if (kind === "approve") await api.approve(id, note);
         else if (kind === "reject") await api.reject(id, note);
         else await api.resume(id);

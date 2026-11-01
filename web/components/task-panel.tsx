@@ -58,6 +58,7 @@ function Detail({ d, data }: { d: Dashboard; data: TaskDetail }) {
   const reduce = !!useReducedMotion();
   const [note, setNote] = useState("");
   const { task, subtasks, snapshots, usage, memory, approval } = data;
+  const pending = (kind: "approve" | "reject" | "resume") => !!d.pending[`${kind}:${task.id}`];
   const tone = TASK_STATUS[task.status];
   const done = subtasks.filter((s) => s.status === "done").length;
   const sortedSnaps = [...snapshots].sort((a, b) => a.version - b.version);
@@ -74,7 +75,7 @@ function Detail({ d, data }: { d: Dashboard; data: TaskDetail }) {
         </div>
         <p className="mt-2 text-sm text-neutral-300">{task.description}</p>
         <p className="mt-3 text-sm text-neutral-300" data-testid="correction-rounds">
-          Rodadas de correção: <strong className="text-white">{task.correctionRounds}</strong> de 2
+          Rodadas de correção: <strong className="text-white">{task.correctionRounds}</strong> de {data.maxCorrectionRounds}
         </p>
       </div>
 
@@ -114,12 +115,12 @@ function Detail({ d, data }: { d: Dashboard; data: TaskDetail }) {
           </label>
           <textarea id="approval-note" data-testid="approval-note" className="field mt-1 min-h-20 py-2" value={note} onChange={(e) => setNote(e.target.value)} />
           <div className="mt-3 flex flex-wrap gap-3">
-            <button type="button" data-testid="approve-btn" className="btn" disabled={d.pending.approve || d.pending.reject} onClick={() => void d.taskAction(task.id, "approve", note.trim() || undefined)}>
-              {d.pending.approve ? <Loader2 className="size-4 animate-spin motion-reduce:animate-none" aria-hidden="true" /> : <ThumbsUp className="size-4" aria-hidden="true" />}
+            <button type="button" data-testid="approve-btn" className="btn" disabled={pending("approve") || pending("reject")} onClick={() => void d.taskAction(task.id, "approve", note.trim() || undefined)}>
+              {pending("approve") ? <Loader2 className="size-4 animate-spin motion-reduce:animate-none" aria-hidden="true" /> : <ThumbsUp className="size-4" aria-hidden="true" />}
               Aprovar
             </button>
-            <button type="button" data-testid="reject-btn" className="btn" disabled={d.pending.approve || d.pending.reject} onClick={() => void d.taskAction(task.id, "reject", note.trim() || undefined)}>
-              {d.pending.reject ? <Loader2 className="size-4 animate-spin motion-reduce:animate-none" aria-hidden="true" /> : <ThumbsDown className="size-4" aria-hidden="true" />}
+            <button type="button" data-testid="reject-btn" className="btn" disabled={pending("approve") || pending("reject")} onClick={() => void d.taskAction(task.id, "reject", note.trim() || undefined)}>
+              {pending("reject") ? <Loader2 className="size-4 animate-spin motion-reduce:animate-none" aria-hidden="true" /> : <ThumbsDown className="size-4" aria-hidden="true" />}
               Rejeitar
             </button>
           </div>
@@ -132,9 +133,14 @@ function Detail({ d, data }: { d: Dashboard; data: TaskDetail }) {
         </p>
       )}
 
-      {task.status === "failed" && (
-        <button type="button" data-testid="resume-btn" className="btn" disabled={d.pending.resume} onClick={() => void d.taskAction(task.id, "resume")}>
-          {d.pending.resume ? <Loader2 className="size-4 animate-spin motion-reduce:animate-none" aria-hidden="true" /> : <RotateCcw className="size-4" aria-hidden="true" />}
+      {task.status === "failed" && !data.resumable && (
+        <p className="text-sm text-neutral-300" data-testid="resume-unavailable">
+          Retomar não resolve: a revisão reprovou na última rodada de correção. Crie uma nova tarefa com o ajuste.
+        </p>
+      )}
+      {task.status === "failed" && data.resumable && (
+        <button type="button" data-testid="resume-btn" className="btn" disabled={pending("resume")} onClick={() => void d.taskAction(task.id, "resume")}>
+          {pending("resume") ? <Loader2 className="size-4 animate-spin motion-reduce:animate-none" aria-hidden="true" /> : <RotateCcw className="size-4" aria-hidden="true" />}
           Retomar
         </button>
       )}

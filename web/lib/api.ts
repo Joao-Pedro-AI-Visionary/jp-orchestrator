@@ -8,7 +8,12 @@ import type {
   WebhookItem,
 } from "./types";
 
-export const API_URL = (process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001").replace(/\/$/, "");
+/**
+ * Default: "/api" on the dashboard's own origin, proxied at runtime to API_INTERNAL_URL
+ * (app/api/[...path]/route.ts), so one image serves any host. NEXT_PUBLIC_API_URL (fixed
+ * at build time) makes the browser call the API directly instead.
+ */
+export const API_URL = (process.env.NEXT_PUBLIC_API_URL || "/api").replace(/\/$/, "");
 /**
  * Demo key, inlined in the browser bundle at build time: anyone who can open the
  * dashboard can read it. Keep the dashboard on localhost or behind your own login.

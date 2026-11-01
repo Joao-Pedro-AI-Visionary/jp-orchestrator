@@ -89,7 +89,7 @@ describe('Orchestrator task lease (H2)', () => {
     const outcomes = await Promise.all([h.orchestrator.run(task.id), other.run(task.id)]);
     expect(outcomes.sort()).toEqual(['completed', 'leased']);
     const usage = await h.store.listUsage(task.id);
-    expect(usage.filter((u) => u.agent === 'planner')).toHaveLength(1);
+    expect(usage.filter((u) => u.agent === 'researcher')).toHaveLength(1); // one researcher in the plan, run once
     expect((await h.store.listSubtasks(task.id)).length).toBe(5);
     expect((await terminalEvents(h, task.id)).map((e) => e.type)).toEqual(['task.completed']);
   });
@@ -108,7 +108,7 @@ describe('Orchestrator task lease (H2)', () => {
     while (await h.store.isTaskLeased(a.id)) await sleep(10);
     expect((await h.store.getTask(a.id))!.status).toBe('completed');
     expect((await h.store.getTask(b.id))!.status).toBe('queued');
-    expect((await h.store.listUsage(a.id)).filter((u) => u.agent === 'planner')).toHaveLength(1);
+    expect((await h.store.listUsage(a.id)).filter((u) => u.agent === 'researcher')).toHaveLength(1);
   });
 
   it('stops without a terminal event when the lease is lost to another runner', async () => {

@@ -2,21 +2,31 @@
 
 import { Activity, Database, Plus, Radio, Server } from "lucide-react";
 import Image from "next/image";
+import type { DependencyState } from "@/lib/types";
 import type { Dashboard } from "@/lib/use-dashboard";
 
-function Indicator({ name, ok, testId, icon }: { name: string; ok: boolean | undefined; testId: string; icon: React.ReactNode }) {
-  const state = ok === undefined ? "verificando" : ok ? "ativo" : "fora do ar";
-  const color = ok === undefined ? "bg-neutral-400" : ok ? "bg-ok" : "bg-bad";
+const STATE: Record<DependencyState | "unknown", { label: string; dot: string }> = {
+  unknown: { label: "verificando", dot: "bg-neutral-400" },
+  up: { label: "ativo", dot: "bg-ok" },
+  down: { label: "fora do ar", dot: "bg-bad" },
+  // Not an outage: the API runs on its in-memory adapter. Hollow dot, neutral tone.
+  disabled: { label: "não configurado", dot: "border border-neutral-400 bg-transparent" },
+};
+
+function Indicator({ name, state, testId, icon }: { name: string; state: DependencyState | undefined; testId: string; icon: React.ReactNode }) {
+  const s = STATE[state ?? "unknown"];
   return (
     <li
       data-testid={testId}
-      data-ok={ok === undefined ? "unknown" : String(ok)}
+      data-ok={state === undefined ? "unknown" : String(state === "up")}
+      data-state={state ?? "unknown"}
+      title={`${name}: ${s.label}`}
       className="flex min-h-12 items-center gap-2 rounded-xl border border-white/10 bg-white/[0.03] px-3 text-sm text-neutral-200"
     >
       {icon}
       <span>{name}</span>
-      <span className={`size-2 rounded-full ${color}`} aria-hidden="true" />
-      <span className="sr-only">{state}</span>
+      <span className={`size-2 rounded-full ${s.dot}`} aria-hidden="true" />
+      {state === "disabled" ? <span className="text-xs text-neutral-400">{s.label}</span> : <span className="sr-only">{s.label}</span>}
     </li>
   );
 }
@@ -35,8 +45,8 @@ export function Header({ d, onNewTask }: { d: Dashboard; onNewTask: () => void }
       </div>
       <div className="flex flex-wrap items-center gap-3">
         <ul aria-label="Saúde dos serviços" className="flex flex-wrap items-center gap-2" data-testid="health">
-          <Indicator name="Postgres" ok={d.health?.postgres} testId="health-postgres" icon={<Database className="size-4 text-neutral-400" aria-hidden="true" />} />
-          <Indicator name="Redis" ok={d.health?.redis} testId="health-redis" icon={<Server className="size-4 text-neutral-400" aria-hidden="true" />} />
+          <Indicator name="Postgres" state={d.health?.postgres} testId="health-postgres" icon={<Database className="size-4 text-neutral-400" aria-hidden="true" />} />
+          <Indicator name="Redis" state={d.health?.redis} testId="health-redis" icon={<Server className="size-4 text-neutral-400" aria-hidden="true" />} />
           <li
             data-testid="live-indicator"
             data-live={String(d.live)}
