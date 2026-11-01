@@ -17,10 +17,10 @@ class PaymentsApi {
 
 class ChargeTool implements ToolHandler {
   readonly key = 'charge';
-  contexts: ToolContext[] = [];
+  contexts: Omit<ToolContext, 'signal'>[] = [];
   constructor(private readonly api: PaymentsApi) {}
   async execute(args: Record<string, unknown>, ctx: ToolContext) {
-    this.contexts.push(ctx);
+    this.contexts.push({ idempotencyKey: ctx.idempotencyKey, attempt: ctx.attempt });
     return this.api.charge(ctx.idempotencyKey, Number(args.amount));
   }
 }
@@ -70,12 +70,13 @@ describe('ToolInvoker', () => {
     const { key } = await invoker.invoke({ taskId: 't1', subtaskId: null, tool: 'probe', args: {}, idempotencyKey: 'k-probe' });
     expect(key).toBe('k-probe');
     expect(seen).toHaveLength(1);
-    expect(seen[0].ctx).toEqual({ idempotencyKey: 'k-probe', attempt: 1 });
+    expect(seen[0].ctx).toMatchObject({ idempotencyKey: 'k-probe', attempt: 1 });
+    expect(seen[0].ctx.signal).toBeInstanceOf(AbortSignal);
     expect(seen[0].row).toMatchObject({ status: 'started', result: null, attempts: 1 });
     expect((seen[0].row as { leaseUntil: string }).leaseUntil).toEqual(expect.any(String));
   });
 
-  it('releases the lease when the handler fails, so a retry runs right away', async () => {
+  it('a clean failure releases the lease: the retry runs right away and does not consume an attempt', async () => {
     const store = new MemoryStore();
     let fail = true;
     const flaky: ToolHandler = {
@@ -88,7 +89,9 @@ describe('ToolInvoker', () => {
     const invoker = new ToolInvoker(store, new StrategyRegistry('tool', [flaky]));
     const call = { taskId: 't1', subtaskId: null, tool: 'flaky', args: {} };
     await expect(invoker.invoke(call)).rejects.toThrow('upstream 503');
-    expect((await invoker.invoke(call)).result).toEqual({ attempt: 2 });
+    expect(await store.findToolCall(ToolInvoker.keyFor(call))).toMatchObject({ status: 'started', attempts: 1, leaseUntil: null, error: 'upstream 503' });
+    expect((await invoker.invoke(call)).result).toEqual({ attempt: 1 });
+    expect(await store.findToolCall(ToolInvoker.keyFor(call))).toMatchObject({ status: 'completed', attempts: 1 });
     expect(await store.listOutbox()).toHaveLength(1);
   });
 
@@ -129,7 +132,7 @@ describe('ToolInvoker', () => {
     expect(api.calls).toHaveLength(2);
   });
 
-  it('caps lease takeovers at TOOL_MAX_ATTEMPTS and refuses to run the handler again', async () => {
+  it('caps lease takeovers at TOOL_MAX_ATTEMPTS, then the call is terminal failed and refused at once', async () => {
     jest.useFakeTimers({ now: new Date('2026-10-31T12:00:00Z') });
     const db = new MemoryStore();
     const tool = new ChargeTool(new PaymentsApi());
@@ -148,8 +151,53 @@ describe('ToolInvoker', () => {
     await expect(refused).rejects.toBeInstanceOf(ToolCallRefusedError);
     await expect(refused).rejects.toThrow(/TOOL_MAX_ATTEMPTS \(3\)/);
     expect(tool.contexts).toHaveLength(3);
-    expect(await db.findToolCall(ToolInvoker.keyFor(call))).toMatchObject({ status: 'started', result: null });
+    const key = ToolInvoker.keyFor(call);
+    expect(await db.findToolCall(key)).toMatchObject({ status: 'failed', result: null, attempts: 4, leaseUntil: null, error: expect.stringMatching(/TOOL_MAX_ATTEMPTS/) });
     expect(await db.listOutbox()).toHaveLength(0);
+
+    // Terminal: a later invoke (dispatcher retry, /resume) is refused without claiming or running anything.
+    await expect(new ToolInvoker(db, registry).invoke(call)).rejects.toBeInstanceOf(ToolCallRefusedError);
+    expect(tool.contexts).toHaveLength(3);
+    expect((await db.findToolCall(key))!.attempts).toBe(4);
+  });
+
+  it('transient clean failures (2 dispatcher calls + a resume) never exhaust TOOL_MAX_ATTEMPTS', async () => {
+    const store = new MemoryStore();
+    let failures = 4;
+    const flaky: ToolHandler = {
+      key: 'flaky',
+      async execute(_args, ctx) {
+        if (failures-- > 0) throw new Error('upstream 503');
+        return { attempt: ctx.attempt };
+      },
+    };
+    const invoker = new ToolInvoker(store, new StrategyRegistry('tool', [flaky]));
+    const call = { taskId: 't1', subtaskId: null, tool: 'flaky', args: {} };
+    for (let i = 0; i < 4; i++) await expect(invoker.invoke(call)).rejects.toThrow('upstream 503');
+    expect((await invoker.invoke(call)).result).toEqual({ attempt: 1 });
+    expect(await store.findToolCall(ToolInvoker.keyFor(call))).toMatchObject({ status: 'completed', attempts: 1 });
+  });
+
+  it('an aborted caller stops the handler through ctx.signal and keeps the lease (effect uncertain)', async () => {
+    const store = new MemoryStore();
+    const seen: AbortSignal[] = [];
+    const slow: ToolHandler = {
+      key: 'slow',
+      execute: (_args, ctx) => new Promise((_, reject) => {
+        seen.push(ctx.signal);
+        ctx.signal.addEventListener('abort', () => reject(ctx.signal.reason));
+      }),
+    };
+    const invoker = new ToolInvoker(store, new StrategyRegistry('tool', [slow]));
+    const ac = new AbortController();
+    const call = invoker.invoke({ taskId: 't1', subtaskId: null, tool: 'slow', args: {}, idempotencyKey: 'k-slow' }, ac.signal);
+    await new Promise((r) => setImmediate(r));
+    ac.abort(new Error('tarefa cancelada'));
+    await expect(call).rejects.toThrow('tarefa cancelada');
+    expect(seen[0].aborted).toBe(true);
+    const row = await store.findToolCall('k-slow');
+    expect(row).toMatchObject({ status: 'started', attempts: 1 });
+    expect(Date.parse(row!.leaseUntil!)).toBeGreaterThan(Date.now());
   });
 
   it('refuses to re-run a started call older than IDEMPOTENCY_KEY_TTL_MS', async () => {

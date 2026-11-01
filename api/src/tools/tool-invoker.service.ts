@@ -2,7 +2,7 @@ import { Inject, Injectable } from '@nestjs/common';
 import { OutboxEvent } from '../common/types';
 import { STORE, TOOL_REGISTRY } from '../common/tokens';
 import { retryConfig } from '../common/retry-horizon';
-import { canonicalJson, newId, nowIso, sha256, sleep, TimeoutError, withTimeout } from '../common/util';
+import { canonicalJson, newId, nowIso, runWithTimeout, sha256, sleep, throwIfAborted, TimeoutError } from '../common/util';
 import { Store } from '../persistence/store.port';
 import { KeyedStrategy, StrategyRegistry } from '../strategy/strategy-registry';
 
@@ -14,8 +14,10 @@ export interface ToolContext {
    * Idempotency-Key header) so the downstream system applies the effect once.
    */
   idempotencyKey: string;
-  /** 1 on the first run; greater than 1 when a previous attempt crashed or failed. */
+  /** 1 on the first run; greater than 1 when this run took over the lease of a crashed or timed out attempt. */
   attempt: number;
+  /** Aborts at the lease deadline or when the caller is cancelled. Forward it to outbound requests. */
+  signal: AbortSignal;
 }
 
 /** A tool a subagent can call. Side effects must be idempotent on ctx.idempotencyKey. */
@@ -30,7 +32,7 @@ export class ToolCallInProgressError extends Error {
   }
 }
 
-/** The call ran out of attempts or outlived its idempotency key: re-running it is no longer safe. */
+/** The call ran out of attempts or outlived its idempotency key: re-running it is no longer safe. Terminal. */
 export class ToolCallRefusedError extends Error {
   constructor(readonly key: string, reason: string) {
     super(`Ferramenta com Idempotency-Key ${key} recusada: ${reason}`);
@@ -45,6 +47,8 @@ export interface ToolInvocation {
   /** Optional explicit key; default is a hash of (task, subtask, tool, args). */
   idempotencyKey?: string;
 }
+
+const isTimeout = (err: unknown) => err instanceof TimeoutError;
 
 export const outboxEvent = (type: string, payload: Record<string, unknown>): OutboxEvent => ({
   id: newId(), type, payload, status: 'pending', attempts: 0,
@@ -62,8 +66,13 @@ export const outboxEvent = (type: string, payload: Record<string, unknown>): Out
  * expire (at most one lease), then reconciles by re-running the handler with the same key.
  * TOOL_LEASE_MS (default 10s) must stay below SUBAGENT_TIMEOUT_MS (30s) so a resumed
  * subagent can wait out a dead owner's lease.
- * A claim beyond TOOL_MAX_ATTEMPTS, or on a call first started more than
- * IDEMPOTENCY_KEY_TTL_MS ago, is refused (ToolCallRefusedError) without running the handler.
+ * attempts counts lease takeovers only: a handler that fails cleanly releases the
+ * lease and the retry reuses the same attempt, so transient errors never burn the budget.
+ * A takeover beyond TOOL_MAX_ATTEMPTS, or a claim on a call first started more than
+ * IDEMPOTENCY_KEY_TTL_MS ago, is refused (ToolCallRefusedError) without running the
+ * handler, and the row becomes terminal 'failed': every later invoke is refused at once.
+ * A handler that timed out or was aborted keeps its lease (its effect is uncertain), so
+ * the next run waits for the lease and counts as a takeover.
  */
 @Injectable()
 export class ToolInvoker {
@@ -80,13 +89,15 @@ export class ToolInvoker {
     return inv.idempotencyKey ?? sha256(canonicalJson([inv.taskId, inv.subtaskId, inv.tool, inv.args]));
   }
 
-  async invoke(inv: ToolInvocation): Promise<{ result: Record<string, unknown>; replay: boolean; key: string }> {
+  async invoke(inv: ToolInvocation, signal?: AbortSignal): Promise<{ result: Record<string, unknown>; replay: boolean; key: string }> {
+    throwIfAborted(signal);
     const key = ToolInvoker.keyFor(inv);
     const existing = await this.store.findToolCall(key);
     if (existing?.status === 'completed') return { result: existing.result!, replay: true, key };
+    if (existing?.status === 'failed') throw new ToolCallRefusedError(key, existing.error ?? 'falhou');
 
     const handler = this.tools.resolve(inv.tool);
-    const claimed = await this.claim(inv, key);
+    const claimed = await this.claim(inv, key, signal);
     if ('result' in claimed) return { result: claimed.result, replay: true, key };
     const { attempt } = claimed;
     const refusal = attempt > this.cfg.toolMaxAttempts
@@ -95,17 +106,21 @@ export class ToolInvoker {
         ? `iniciada em ${claimed.createdAt}, há mais de IDEMPOTENCY_KEY_TTL_MS (${this.cfg.idempotencyKeyTtlMs}ms)`
         : null;
     if (refusal) {
-      await this.store.releaseToolCall(key, attempt).catch(() => undefined);
+      await this.store.failToolCall(key, attempt, refusal).catch(() => undefined);
       throw new ToolCallRefusedError(key, refusal);
     }
 
     this.executions++;
     let result: Record<string, unknown>;
     try {
-      result = await withTimeout(handler.execute(inv.args, { idempotencyKey: key, attempt }), this.leaseMs, `ferramenta ${inv.tool}`);
+      result = await runWithTimeout((s) => handler.execute(inv.args, { idempotencyKey: key, attempt, signal: s }),
+        this.leaseMs, `ferramenta ${inv.tool}`, { parent: signal, graceMs: 0 });
     } catch (err) {
-      // A timed out handler may still be running: keep its lease so nobody overlaps it.
-      if (!(err instanceof TimeoutError)) await this.store.releaseToolCall(key, attempt).catch(() => undefined);
+      // A timed out or aborted handler may still be running or may have applied its effect:
+      // keep its lease so nobody overlaps it. Only a clean failure releases the call.
+      if (!signal?.aborted && !isTimeout(err)) {
+        await this.store.releaseToolCall(key, attempt, (err as Error).message).catch(() => undefined);
+      }
       throw err;
     }
     const saved = await this.store.completeToolCallWithOutbox(
@@ -120,7 +135,7 @@ export class ToolInvoker {
    * Claims the call, waiting (at most about one lease) while another worker holds a live lease.
    * Returns the attempt number and when the call first started, or the stored result if the call completed meanwhile.
    */
-  private async claim(inv: ToolInvocation, key: string): Promise<{ attempt: number; createdAt: string } | { result: Record<string, unknown> }> {
+  private async claim(inv: ToolInvocation, key: string, signal?: AbortSignal): Promise<{ attempt: number; createdAt: string } | { result: Record<string, unknown> }> {
     const deadline = Date.now() + this.leaseMs + 1_000;
     for (;;) {
       const claim = await this.store.claimToolCall({
@@ -129,9 +144,10 @@ export class ToolInvoker {
       if (claim) return { attempt: claim.attempts, createdAt: claim.createdAt };
       const current = await this.store.findToolCall(key);
       if (current?.status === 'completed') return { result: current.result! };
+      if (current?.status === 'failed') throw new ToolCallRefusedError(key, current.error ?? 'falhou');
       if (Date.now() >= deadline) throw new ToolCallInProgressError(key);
       const leaseLeft = current?.leaseUntil ? Date.parse(current.leaseUntil) - Date.now() : 0;
-      await sleep(Math.min(Math.max(leaseLeft + 10, 50), 1_000, Math.max(deadline - Date.now(), 1)));
+      await sleep(Math.min(Math.max(leaseLeft + 10, 50), 1_000, Math.max(deadline - Date.now(), 1)), signal);
     }
   }
 }

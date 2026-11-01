@@ -9,7 +9,7 @@ import { ApprovalService } from '../approval/approval.service';
 import { EventBus } from '../events/event-bus';
 import { SharedMemory } from '../memory/shared-memory';
 import { Store } from '../persistence/store.port';
-import { Orchestrator } from './orchestrator.service';
+import { Orchestrator, TaskBusyError, TaskNotResumableError } from './orchestrator.service';
 
 interface CreateTaskBody { title?: unknown; description?: unknown; budgetUsd?: unknown; requiresApproval?: unknown }
 interface ResLike { status(code: number): void; setHeader(name: string, value: string): void }
@@ -76,7 +76,7 @@ export class TasksController {
   @HttpCode(200)
   async approve(@Param('id') id: string, @Body() body: { note?: string }) {
     await this.approvals.resolve(id, 'approved', body?.note?.trim() || null);
-    void this.orchestrator.start(id);
+    void this.orchestrator.continueAfterApproval(id);
     return this.mustGet(id);
   }
 
@@ -84,21 +84,24 @@ export class TasksController {
   @HttpCode(200)
   async reject(@Param('id') id: string, @Body() body: { note?: string }) {
     await this.approvals.resolve(id, 'rejected', body?.note?.trim() || 'Rejeitada na aprovação humana');
-    await this.orchestrator.start(id);
+    await this.orchestrator.continueAfterApproval(id);
     return this.mustGet(id);
   }
 
-  /** Resumes a failed (or stuck) task from the step journal. */
+  /**
+   * Resumes a failed (or stuck) task from the step journal. 409 while any run owns the
+   * task lease, including a timed out run that is still stopping, here or on another replica.
+   */
   @Post(':id/resume')
   @HttpCode(200)
   async resume(@Param('id') id: string) {
-    const task = await this.mustGet(id);
-    const stuck = ['planning', 'running', 'merging', 'queued'].includes(task.status) && !this.orchestrator.isRunning(id);
-    if (task.status !== 'failed' && !stuck) throw new ConflictException(`Tarefa em ${task.status} não pode ser retomada`);
-    const updated = await this.store.updateTask(id, { status: 'running', error: null });
-    this.bus.emit('task.status', id, { status: 'running' });
-    void this.orchestrator.start(id);
-    return updated;
+    await this.mustGet(id);
+    try {
+      return await this.orchestrator.resume(id);
+    } catch (err) {
+      if (err instanceof TaskBusyError || err instanceof TaskNotResumableError) throw new ConflictException(err.message);
+      throw err;
+    }
   }
 
   private async mustGet(id: string) {

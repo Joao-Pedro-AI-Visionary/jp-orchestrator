@@ -1,10 +1,13 @@
 import {
-  Approval, InboxEntry, OutboxEvent, Snapshot, Subtask, Task, ToolCall, Usage,
+  Approval, InboxEntry, OutboxEvent, Snapshot, Subtask, Task, TaskLease, TaskStatus, TERMINAL_STATUSES, ToolCall, Usage,
 } from '../common/types';
 import { nowIso, round6 } from '../common/util';
 import { Store, ToolClaim } from './store.port';
 
 const clone = <T>(v: T): T => structuredClone(v);
+const REOPENABLE: TaskStatus[] = ['failed', 'queued', 'planning', 'running', 'merging'];
+
+interface LeaseRow { owner: string | null; token: number; until: number }
 
 /** In-process adapter. Single threaded event loop makes every method atomic. */
 export class MemoryStore implements Store {
@@ -13,6 +16,7 @@ export class MemoryStore implements Store {
   private subtasks = new Map<string, Subtask>();
   private steps = new Map<string, unknown>();
   private approvals = new Map<string, Approval>();
+  private leases = new Map<string, LeaseRow>();
   private toolCalls = new Map<string, ToolCall>();
   private outbox = new Map<string, OutboxEvent>();
   private usage: Usage[] = [];
@@ -52,14 +56,60 @@ export class MemoryStore implements Store {
     return clone(t);
   }
 
-  async updateTaskWithEvent(id: string, patch: Partial<Task>, event: OutboxEvent) {
-    const t = await this.updateTask(id, patch);
-    this.outbox.set(event.id, clone(event));
+  private holds(taskId: string, lease?: TaskLease) {
+    if (!lease) return true;
+    const l = this.leases.get(taskId);
+    return !!l && l.owner === lease.owner && l.token === lease.token;
+  }
+
+  async updateActiveTask(id: string, patch: Partial<Task>, lease?: TaskLease) {
+    const t = this.tasks.get(id);
+    if (!t) throw new Error(`Tarefa ${id} não encontrada`);
+    if (TERMINAL_STATUSES.includes(t.status) || !this.holds(id, lease)) return null;
+    return this.updateTask(id, patch);
+  }
+
+  async finishTask(id: string, patch: Partial<Task>, event: OutboxEvent, lease?: TaskLease) {
+    const t = await this.updateActiveTask(id, patch, lease);
+    if (t) this.outbox.set(event.id, clone(event));
     return t;
   }
 
+  async reopenTask(id: string, lease: TaskLease) {
+    const t = this.tasks.get(id);
+    if (!t || !REOPENABLE.includes(t.status) || !this.holds(id, lease)) return null;
+    return this.updateTask(id, { status: 'running', error: null });
+  }
+
+  async acquireTaskLease(taskId: string, owner: string, leaseMs: number) {
+    if (!this.tasks.has(taskId)) return null;
+    const now = Date.now();
+    const l = this.leases.get(taskId) ?? { owner: null, token: 0, until: 0 };
+    if (l.owner && l.until > now) return null;
+    const next = { owner, token: l.token + 1, until: now + leaseMs };
+    this.leases.set(taskId, next);
+    return { owner, token: next.token };
+  }
+
+  async renewTaskLease(taskId: string, lease: TaskLease, leaseMs: number) {
+    if (!this.holds(taskId, lease)) return false;
+    this.leases.get(taskId)!.until = Date.now() + leaseMs;
+    return true;
+  }
+
+  async releaseTaskLease(taskId: string, lease: TaskLease) {
+    const l = this.leases.get(taskId);
+    if (l && this.holds(taskId, lease)) Object.assign(l, { owner: null, until: 0 });
+  }
+
+  async getTaskLease(taskId: string) {
+    const l = this.leases.get(taskId);
+    if (!l?.owner || l.until <= Date.now()) return null;
+    return { owner: l.owner, token: l.token, until: new Date(l.until).toISOString() };
+  }
+
   async saveSubtasks(list: Subtask[]) {
-    for (const s of list) this.subtasks.set(s.id, clone(s));
+    for (const s of list) if (!this.subtasks.has(s.id)) this.subtasks.set(s.id, clone(s));
   }
 
   async updateSubtask(id: string, patch: Partial<Subtask>) {
@@ -83,10 +133,18 @@ export class MemoryStore implements Store {
   async putStep(taskId: string, key: string, value: unknown) {
     const k = `${taskId}:${key}`;
     if (!this.steps.has(k)) this.steps.set(k, clone(value));
+    return clone(this.steps.get(k));
   }
 
   async upsertApproval(a: Approval) {
     this.approvals.set(a.taskId, clone(a));
+    return clone(a);
+  }
+
+  async resolveApproval(taskId: string, decision: 'approved' | 'rejected', note: string | null, resolvedAt: string) {
+    const a = this.approvals.get(taskId);
+    if (!a || a.status !== 'pending') return null;
+    Object.assign(a, { status: decision, note, resolvedAt });
     return clone(a);
   }
 
@@ -105,12 +163,13 @@ export class MemoryStore implements Store {
     const leaseUntil = new Date(now + leaseMs).toISOString();
     const existing = this.toolCalls.get(claim.idempotencyKey);
     if (!existing) {
-      const call: ToolCall = { ...clone(claim), status: 'started', result: null, attempts: 1, leaseUntil, completedAt: null };
+      const call: ToolCall = { ...clone(claim), status: 'started', result: null, error: null, attempts: 1, leaseUntil, completedAt: null };
       this.toolCalls.set(call.idempotencyKey, call);
       return clone(call);
     }
     if (existing.status !== 'started' || (existing.leaseUntil && Date.parse(existing.leaseUntil) > now)) return null;
-    Object.assign(existing, { attempts: existing.attempts + 1, leaseUntil });
+    // Only a takeover of an expired lease is a new attempt; a cleanly released call keeps its attempt.
+    Object.assign(existing, { attempts: existing.attempts + (existing.leaseUntil ? 1 : 0), leaseUntil });
     return clone(existing);
   }
 
@@ -124,9 +183,16 @@ export class MemoryStore implements Store {
     return clone(c);
   }
 
-  async releaseToolCall(key: string, attempt: number) {
+  async releaseToolCall(key: string, attempt: number, error?: string) {
     const c = this.toolCalls.get(key);
-    if (c && c.status === 'started' && c.attempts === attempt) c.leaseUntil = nowIso();
+    if (c && c.status === 'started' && c.attempts === attempt) Object.assign(c, { leaseUntil: null, error: error ?? c.error });
+  }
+
+  async failToolCall(key: string, attempt: number, error: string) {
+    const c = this.toolCalls.get(key);
+    if (!c) return null;
+    if (c.status === 'started' && c.attempts === attempt) Object.assign(c, { status: 'failed', error, leaseUntil: null });
+    return clone(c);
   }
 
   async claimOutbox(limit: number, leaseMs: number) {

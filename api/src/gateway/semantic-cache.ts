@@ -9,6 +9,10 @@ export interface CachedCompletion {
   costUsd: number;
 }
 
+/**
+ * Lookup order: exact match on sha256(prompt) first (O(1), similarity 1), then the
+ * semantic scan over the scope's recent entries.
+ */
 export interface SemanticCache {
   lookup(scope: string, prompt: string): Promise<{ entry: CachedCompletion; similarity: number } | null>;
   store(scope: string, prompt: string, entry: CachedCompletion): Promise<void>;
@@ -36,10 +40,13 @@ interface Item { vec: number[]; entry: CachedCompletion }
 
 export class InMemorySemanticCache implements SemanticCache {
   private scopes = new Map<string, Item[]>();
+  private exact = new Map<string, CachedCompletion>();
 
   constructor(private readonly threshold = 0.92, private readonly maxPerScope = 200) {}
 
   async lookup(scope: string, prompt: string) {
+    const same = this.exact.get(`${scope}:${sha256(prompt)}`);
+    if (same) return { entry: same, similarity: 1 };
     const vec = embed(prompt);
     let best: { entry: CachedCompletion; similarity: number } | null = null;
     for (const it of this.scopes.get(scope) ?? []) {
@@ -53,6 +60,12 @@ export class InMemorySemanticCache implements SemanticCache {
     const list = this.scopes.get(scope) ?? [];
     list.unshift({ vec: embed(prompt), entry });
     this.scopes.set(scope, list.slice(0, this.maxPerScope));
+    this.exact.set(`${scope}:${sha256(prompt)}`, entry);
+    // Bounded like the scopes: drop the oldest exact entries (Map keeps insertion order).
+    for (const k of this.exact.keys()) {
+      if (this.exact.size <= this.maxPerScope * 50) break;
+      this.exact.delete(k);
+    }
   }
 }
 
@@ -66,8 +79,11 @@ export class RedisSemanticCache implements SemanticCache {
   ) {}
 
   private key(scope: string) { return `jp:cache:${scope}`; }
+  private exactKey(scope: string, prompt: string) { return `jp:cache:${scope}:exact:${sha256(prompt)}`; }
 
   async lookup(scope: string, prompt: string) {
+    const same = await this.redis.get(this.exactKey(scope, prompt));
+    if (same) return { entry: JSON.parse(same) as CachedCompletion, similarity: 1 };
     const vec = embed(prompt);
     const raw = await this.redis.lrange(this.key(scope), 0, this.maxPerScope - 1);
     let best: { entry: CachedCompletion; similarity: number } | null = null;
@@ -82,6 +98,7 @@ export class RedisSemanticCache implements SemanticCache {
   async store(scope: string, prompt: string, entry: CachedCompletion) {
     const k = this.key(scope);
     await this.redis.multi().lpush(k, JSON.stringify({ vec: embed(prompt), entry }))
-      .ltrim(k, 0, this.maxPerScope - 1).expire(k, this.ttlSeconds).exec();
+      .ltrim(k, 0, this.maxPerScope - 1).expire(k, this.ttlSeconds)
+      .set(this.exactKey(scope, prompt), JSON.stringify(entry), 'EX', this.ttlSeconds).exec();
   }
 }

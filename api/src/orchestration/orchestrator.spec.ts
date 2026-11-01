@@ -3,6 +3,14 @@ import { ModelSpec } from '../gateway/model-catalog';
 import { orchestratorHarness } from '../test-utils/harness';
 import { Planner } from './planner';
 
+async function waitFor(cond: () => Promise<boolean>, ms = 3_000) {
+  const end = Date.now() + ms;
+  while (!(await cond())) {
+    if (Date.now() > end) throw new Error('condição não atingida a tempo');
+    await new Promise((r) => setTimeout(r, 5));
+  }
+}
+
 /** Mock provider with latency that tracks how many calls run at the same time. */
 class ConcurrencyProbe implements LlmProvider {
   readonly key = 'mock';
@@ -59,6 +67,10 @@ describe('Orchestrator', () => {
     expect(done.correctionRounds).toBe(1);
     const labels = (await h.store.listSnapshots(task.id)).map((s) => s.label);
     expect(labels).toEqual(['plan', 'dispatch', 'review-1', 'correction-1', 'review-2', 'merge']);
+    // The correction round and the second review go to the model, never to the answer just rejected.
+    const usage = await h.store.listUsage(task.id);
+    expect(usage.filter((u) => u.cached)).toEqual([]);
+    expect(h.gateway.stats.cacheBypasses).toBeGreaterThanOrEqual(2);
   });
 
   it('pauses durably for human approval and resumes without redoing steps', async () => {
@@ -103,7 +115,13 @@ describe('Orchestrator', () => {
     for (const m of h.catalog.list()) h.catalog.setHealthy(m.id, false);
     expect(await h.orchestrator.run(task.id)).toBe('failed');
     for (const m of h.catalog.list()) h.catalog.setHealthy(m.id, true);
-    expect(await h.orchestrator.run(task.id)).toBe('completed');
+    // A failed task is final for run(): only an explicit resume reopens it.
+    expect(await h.orchestrator.run(task.id)).toBe('failed');
+    expect((await h.orchestrator.resume(task.id)).status).toBe('running');
+    await waitFor(async () => (await h.store.getTask(task.id))!.status === 'completed');
+    const outbox = await h.store.listOutbox();
+    expect(outbox.filter((e) => e.type === 'task.failed')).toHaveLength(1);
+    expect(outbox.filter((e) => e.type === 'task.completed')).toHaveLength(1);
   });
 
   it('does nothing when a finished task is started again', async () => {

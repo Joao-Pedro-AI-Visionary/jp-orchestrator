@@ -1,3 +1,4 @@
+import { retryConfig } from '../common/retry-horizon';
 import { OutboxEvent } from '../common/types';
 import { MemoryStore } from '../persistence/memory.store';
 import { crashOn, ProcessCrash } from '../test-utils/crash';
@@ -53,12 +54,25 @@ describe('OutboxRelay', () => {
     const relay = new OutboxRelay(store, new EventBus(), async (_u, body) => { sent.push(body); return { status: 200 }; });
     await enqueue(store);
 
-    jest.setSystemTime(Date.now() + 600_001);
+    jest.setSystemTime(Date.now() + retryConfig().outboxMaxAgeMs + 1);
     expect(await relay.tick()).toBe(0);
     expect(sent).toHaveLength(0);
     expect((await store.listOutbox())[0]).toMatchObject({ status: 'dead', attempts: 0, lastError: 'expired', deliveredAt: null });
     expect(await relay.tick()).toBe(0);
     expect(sent).toHaveLength(0);
+  });
+
+  it('an event delayed by a one hour outage is still delivered with the default max age', async () => {
+    jest.useFakeTimers({ now: new Date('2026-10-31T12:00:00Z') });
+    const store = new MemoryStore();
+    const sent: string[] = [];
+    const relay = new OutboxRelay(store, new EventBus(), async (_u, body) => { sent.push(body); return { status: 200 }; });
+    await enqueue(store);
+
+    jest.setSystemTime(Date.now() + 3_600_000);
+    expect(await relay.tick()).toBe(1);
+    expect(sent).toHaveLength(1);
+    expect((await store.listOutbox())[0]).toMatchObject({ status: 'delivered', attempts: 1, lastError: null });
   });
 
   it('crash between webhook 2xx and the delivered mark: redelivery after the lease keeps the same ids and the receiver stores the event once', async () => {

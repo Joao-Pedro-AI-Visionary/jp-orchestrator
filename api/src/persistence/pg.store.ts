@@ -2,7 +2,7 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { Pool, PoolClient } from 'pg';
 import {
-  Approval, InboxEntry, OutboxEvent, Snapshot, Subtask, Task, ToolCall, Usage,
+  Approval, InboxEntry, OutboxEvent, Snapshot, Subtask, Task, TaskLease, TERMINAL_STATUSES, ToolCall, Usage,
 } from '../common/types';
 import { Store, ToolClaim } from './store.port';
 
@@ -11,6 +11,8 @@ const iso = (v: unknown): string | null => (v ? new Date(v as string).toISOStrin
 const num = (v: unknown): number => Number(v ?? 0);
 const snake = (k: string): string => k.replace(/[A-Z]/g, (c) => `_${c.toLowerCase()}`);
 const JSON_COLS = new Set(['result', 'payload', 'content', 'args', 'value']);
+const REOPENABLE = ['failed', 'queued', 'planning', 'running', 'merging'];
+const ms = (n: number) => String(Math.max(0, Math.round(n)));
 
 const toTask = (r: Row): Task => ({
   id: r.id as string,
@@ -61,6 +63,7 @@ const toToolCall = (r: Row): ToolCall => ({
   args: r.args as Record<string, unknown>,
   status: r.status as ToolCall['status'],
   result: (r.result as Record<string, unknown>) ?? null,
+  error: (r.error as string) ?? null,
   attempts: num(r.attempts),
   leaseUntil: iso(r.lease_until),
   createdAt: iso(r.created_at)!,
@@ -195,12 +198,73 @@ export class PgStore implements Store {
     return this.patchTask(this.pool, id, patch);
   }
 
-  updateTaskWithEvent(id: string, patch: Partial<Task>, e: OutboxEvent) {
+  /** UPDATE ... WHERE status NOT IN terminal [AND lease_owner/lease_token match]. Null when the guard refused. */
+  private async guardedPatch(c: Pool | PoolClient, id: string, patch: Partial<Task>, lease?: TaskLease) {
+    const { sql, values } = setClause({ ...patch, createdAt: undefined, updatedAt: undefined });
+    const params: unknown[] = [id, ...values, [...TERMINAL_STATUSES]];
+    let where = `id = $1 AND status <> ALL($${params.length}::text[])`;
+    if (lease) {
+      params.push(lease.owner, lease.token);
+      where += ` AND lease_owner = $${params.length - 1} AND lease_token = $${params.length}`;
+    }
+    const r = await c.query(`UPDATE tasks SET ${sql ? `${sql}, ` : ''}updated_at = now() WHERE ${where} RETURNING *`, params);
+    return r.rows[0] ? toTask(r.rows[0]) : null;
+  }
+
+  updateActiveTask(id: string, patch: Partial<Task>, lease?: TaskLease) {
+    return this.guardedPatch(this.pool, id, patch, lease);
+  }
+
+  finishTask(id: string, patch: Partial<Task>, e: OutboxEvent, lease?: TaskLease) {
     return this.tx(async (c) => {
-      const t = await this.patchTask(c, id, patch);
-      await this.insertOutbox(c, e);
+      const t = await this.guardedPatch(c, id, patch, lease);
+      if (t) await this.insertOutbox(c, e);
       return t;
     });
+  }
+
+  async reopenTask(id: string, lease: TaskLease) {
+    const r = await this.pool.query(
+      `UPDATE tasks SET status = 'running', error = NULL, updated_at = now()
+       WHERE id = $1 AND status = ANY($2::text[]) AND lease_owner = $3 AND lease_token = $4 RETURNING *`,
+      [id, REOPENABLE, lease.owner, lease.token],
+    );
+    return r.rows[0] ? toTask(r.rows[0]) : null;
+  }
+
+  async acquireTaskLease(taskId: string, owner: string, leaseMs: number) {
+    const r = await this.pool.query(
+      `UPDATE tasks SET lease_owner = $2, lease_until = now() + ($3 || ' milliseconds')::interval, lease_token = lease_token + 1
+       WHERE id = $1 AND (lease_owner IS NULL OR lease_until IS NULL OR lease_until <= now())
+       RETURNING lease_owner, lease_token`,
+      [taskId, owner, ms(leaseMs)],
+    );
+    return r.rows[0] ? { owner: r.rows[0].lease_owner as string, token: num(r.rows[0].lease_token) } : null;
+  }
+
+  async renewTaskLease(taskId: string, lease: TaskLease, leaseMs: number) {
+    const r = await this.pool.query(
+      `UPDATE tasks SET lease_until = now() + ($4 || ' milliseconds')::interval
+       WHERE id = $1 AND lease_owner = $2 AND lease_token = $3`,
+      [taskId, lease.owner, lease.token, ms(leaseMs)],
+    );
+    return r.rowCount === 1;
+  }
+
+  async releaseTaskLease(taskId: string, lease: TaskLease) {
+    await this.pool.query(
+      'UPDATE tasks SET lease_owner = NULL, lease_until = NULL WHERE id = $1 AND lease_owner = $2 AND lease_token = $3',
+      [taskId, lease.owner, lease.token],
+    );
+  }
+
+  async getTaskLease(taskId: string) {
+    const r = await this.pool.query(
+      'SELECT lease_owner, lease_token, lease_until FROM tasks WHERE id = $1 AND lease_owner IS NOT NULL AND lease_until > now()',
+      [taskId],
+    );
+    const row = r.rows[0];
+    return row ? { owner: row.lease_owner as string, token: num(row.lease_token), until: iso(row.lease_until)! } : null;
   }
 
   private insertOutbox(c: PoolClient, e: OutboxEvent) {
@@ -240,10 +304,12 @@ export class PgStore implements Store {
   }
 
   async putStep(taskId: string, key: string, value: unknown) {
-    await this.pool.query(
-      'INSERT INTO step_journal (task_id, step_key, value) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING',
+    const ins = await this.pool.query(
+      'INSERT INTO step_journal (task_id, step_key, value) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING RETURNING value',
       [taskId, key, JSON.stringify(value ?? null)],
     );
+    if (ins.rows[0]) return ins.rows[0].value;
+    return (await this.getStep(taskId, key))?.value ?? null;
   }
 
   async upsertApproval(a: Approval) {
@@ -254,6 +320,14 @@ export class PgStore implements Store {
       [a.taskId, a.status, a.note, a.requestedAt, a.resolvedAt],
     );
     return toApproval(r.rows[0]);
+  }
+
+  async resolveApproval(taskId: string, decision: 'approved' | 'rejected', note: string | null, resolvedAt: string) {
+    const r = await this.pool.query(
+      `UPDATE approvals SET status = $2, note = $3, resolved_at = $4 WHERE task_id = $1 AND status = 'pending' RETURNING *`,
+      [taskId, decision, note, resolvedAt],
+    );
+    return r.rows[0] ? toApproval(r.rows[0]) : null;
   }
 
   async getApproval(taskId: string) {
@@ -271,7 +345,8 @@ export class PgStore implements Store {
       `INSERT INTO tool_calls (idempotency_key, task_id, subtask_id, tool, args, status, attempts, lease_until, created_at)
        VALUES ($1,$2,$3,$4,$5,'started',1, now() + ($6 || ' milliseconds')::interval, $7)
        ON CONFLICT (idempotency_key) DO UPDATE
-         SET attempts = tool_calls.attempts + 1, lease_until = EXCLUDED.lease_until
+         SET attempts = tool_calls.attempts + CASE WHEN tool_calls.lease_until IS NULL THEN 0 ELSE 1 END,
+             lease_until = EXCLUDED.lease_until
          WHERE tool_calls.status = 'started' AND (tool_calls.lease_until IS NULL OR tool_calls.lease_until <= now())
        RETURNING *`,
       [call.idempotencyKey, call.taskId, call.subtaskId, call.tool, JSON.stringify(call.args), String(leaseMs), call.createdAt],
@@ -295,11 +370,21 @@ export class PgStore implements Store {
     return current;
   }
 
-  async releaseToolCall(key: string, attempt: number) {
+  async releaseToolCall(key: string, attempt: number, error?: string) {
     await this.pool.query(
-      `UPDATE tool_calls SET lease_until = now() WHERE idempotency_key = $1 AND status = 'started' AND attempts = $2`,
-      [key, attempt],
+      `UPDATE tool_calls SET lease_until = NULL, error = COALESCE($3, error)
+       WHERE idempotency_key = $1 AND status = 'started' AND attempts = $2`,
+      [key, attempt, error ?? null],
     );
+  }
+
+  async failToolCall(key: string, attempt: number, error: string) {
+    await this.pool.query(
+      `UPDATE tool_calls SET status = 'failed', error = $3, lease_until = NULL
+       WHERE idempotency_key = $1 AND status = 'started' AND attempts = $2`,
+      [key, attempt, error],
+    );
+    return this.findToolCall(key);
   }
 
   async claimOutbox(limit: number, leaseMs: number) {

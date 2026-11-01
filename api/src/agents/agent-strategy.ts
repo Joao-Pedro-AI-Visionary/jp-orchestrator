@@ -12,6 +12,8 @@ export interface AgentContext {
   gateway: GatewayService;
   tools: ToolInvoker;
   memory: SharedMemory;
+  /** Aborts on subagent timeout, task timeout or lost lease. Pass it to every gateway and tool call. */
+  signal: AbortSignal;
 }
 
 export interface AgentResult {
@@ -38,4 +40,7 @@ export const promptFor = (ctx: AgentContext, extra: string[] = []): string => [
 ].join('\n');
 
 export const call = (ctx: AgentContext, agent: AgentStrategy, prompt: string) =>
-  ctx.gateway.complete({ taskId: ctx.task.id, subtaskId: ctx.subtask.id, agent: agent.key, prompt, tier: agent.tier });
+  ctx.gateway.complete({
+    taskId: ctx.task.id, subtaskId: ctx.subtask.id, agent: agent.key, prompt, tier: agent.tier,
+    attempt: ctx.attempt, feedback: ctx.feedback, signal: ctx.signal,
+  });

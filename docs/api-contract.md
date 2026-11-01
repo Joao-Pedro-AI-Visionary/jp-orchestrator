@@ -39,12 +39,12 @@ interface Approval { taskId: string; status: 'pending' | 'approved' | 'rejected'
 | GET | /tasks/:id | | `{ task, subtasks: Subtask[], snapshots: Snapshot[], usage: Usage[], approval: Approval \| null, memory: {key,value,agent,at}[] }` |
 | POST | /tasks/:id/approve | `{ note? }` | `Task` (retoma o loop durável) |
 | POST | /tasks/:id/reject | `{ note? }` | `Task` (status `rejected`) |
-| POST | /tasks/:id/resume | | `Task` (retoma tarefa `failed`/`running` a partir do journal) |
+| POST | /tasks/:id/resume | | `Task` (retoma tarefa `failed` ou ativa sem dono a partir do journal). 409 se outra execução tem o lease da tarefa (inclusive uma execução cancelada por timeout que ainda está parando) ou se o status não permite retomar |
 | GET | /billing/summary | | `{ totals: {tokens, costUsd, calls, cacheHits, savedUsd}, byModel: {model,tokens,costUsd,calls}[], byAgent: {agent,tokens,costUsd,calls}[], byTask: {taskId,title,status,costUsd,budgetUsd,tokens}[] }` |
 | GET | /billing/report.csv | | `text/csv` |
 | GET | /gateway/models | | `{ id, provider, tier: 'cheap'\|'balanced'\|'premium', inputPer1k, outputPer1k, healthy }[]` |
 | POST | /gateway/models/:id/toggle | | modelo atualizado (simula queda, força fallback) |
-| GET | /gateway/stats | | `{ requests, cacheHits, fallbacks, rejectedTokenLimit, budgetBlocks }` |
+| GET | /gateway/stats | | `{ requests, cacheHits, cacheBypasses, fallbacks, rejectedTokenLimit, budgetBlocks }` |
 | POST | /webhooks/inbox | corpo bruto assinado; headers `X-JP-Signature`, `X-JP-Event`, `X-JP-Event-Id`, `Idempotency-Key` | 200 `{ received: true, verified: bool, duplicate: bool }` (reentrega do mesmo `X-JP-Event-Id` verificado: `duplicate: true`, não grava de novo) |
 | GET | /webhooks/inbox | | `{ id, eventId, event, verified, signature, receivedAt, payload }[]` |
 | GET | /events | SSE | cada mensagem `data: { type, taskId, payload, at }` |
