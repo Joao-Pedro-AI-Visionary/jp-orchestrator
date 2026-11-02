@@ -1,5 +1,7 @@
 import { BudgetExceededError } from '../billing/billing.service';
-import { nowIso } from '../common/util';
+import { estimateTokens, newId, nowIso, round6 } from '../common/util';
+import { LlmProvider, MockProvider } from './llm-provider';
+import { costOf } from './model-catalog';
 import { gatewayHarness } from '../test-utils/harness';
 import { TokenLimitError } from './gateway.service';
 import { cosine, embed, InMemorySemanticCache } from './semantic-cache';
@@ -92,6 +94,66 @@ describe('GatewayService', () => {
     await seedTask(h.store, 0.0000001);
     await expect(h.gateway.complete(req('TAREFA: caro', 'premium'))).rejects.toBeInstanceOf(BudgetExceededError);
     expect(h.billing.budgetBlocks).toBe(1);
+  });
+});
+
+describe('GatewayService budget reservation', () => {
+  const MAX_OUT = 512;
+  const estimate = (h: ReturnType<typeof gatewayHarness>, prompt: string, model = 0) =>
+    costOf(h.catalog.chainFor('cheap')[model], estimateTokens(prompt), MAX_OUT);
+
+  it('reservation race: concurrent calls that each fit the budget alone but not together -> exactly one runs', async () => {
+    const h = gatewayHarness(new MockProvider(20));
+    const prompts = ['TAREFA: primeira chamada', 'TAREFA: segunda chamada'];
+    await seedTask(h.store, estimate(h, prompts[0]) * 1.5);
+    const results = await Promise.allSettled(prompts.map((p) => h.gateway.complete(req(p))));
+    expect(results.map((r) => r.status).sort()).toEqual(['fulfilled', 'rejected']);
+    expect((results.find((r) => r.status === 'rejected') as PromiseRejectedResult).reason).toBeInstanceOf(BudgetExceededError);
+    expect(await h.store.listUsage('t1')).toHaveLength(1);
+    const task = (await h.store.getTask('t1'))!;
+    expect(task.spentUsd).toBeLessThanOrEqual(task.budgetUsd);
+    expect(h.billing.budgetBlocks).toBe(1);
+  });
+
+  it('settles the reservation with the real cost: the budget is free again once the call ended', async () => {
+    const h = gatewayHarness();
+    await seedTask(h.store);
+    await h.gateway.complete(req('TAREFA: liquidar'));
+    const task = (await h.store.getTask('t1'))!;
+    // Nothing left reserved: the whole remaining budget can be reserved.
+    expect(await h.store.reserveBudget(newId(), 't1', round6(task.budgetUsd - task.spentUsd))).toMatchObject({ reserved: true });
+  });
+
+  it('fallback: the failed model reservation is released and the next model reserves its own worst case', async () => {
+    const h = gatewayHarness();
+    const prompt = 'TAREFA: fallback';
+    const reserve = jest.spyOn(h.store, 'reserveBudget');
+    const release = jest.spyOn(h.store, 'releaseBudget');
+    await seedTask(h.store);
+    h.catalog.setHealthy('mock-mini', false);
+    expect((await h.gateway.complete(req(prompt))).model).toBe('mock-lite');
+    expect(reserve.mock.calls.map((c) => c[2])).toEqual([round6(estimate(h, prompt, 0)), round6(estimate(h, prompt, 1))]);
+    expect(release).toHaveBeenCalledWith(reserve.mock.calls[0][0]);
+    const task = (await h.store.getTask('t1'))!;
+    expect(await h.store.reserveBudget(newId(), 't1', round6(task.budgetUsd - task.spentUsd))).toMatchObject({ reserved: true });
+  });
+
+  it('a fallback model that would cross the budget is refused before it is called', async () => {
+    const h = gatewayHarness();
+    const prompt = 'TAREFA: fallback caro';
+    await seedTask(h.store, estimate(h, prompt, 0) * 1.01);
+    expect(estimate(h, prompt, 1)).toBeGreaterThan(estimate(h, prompt, 0) * 1.01);
+    h.catalog.setHealthy('mock-mini', false);
+    await expect(h.gateway.complete(req(prompt))).rejects.toBeInstanceOf(BudgetExceededError);
+    expect(await h.store.listUsage('t1')).toHaveLength(0);
+  });
+
+  it('a provider error that is not an outage releases the reservation', async () => {
+    const boom: LlmProvider = { key: 'mock', complete: async () => { throw new Error('500 do provedor'); } };
+    const h = gatewayHarness(boom);
+    await seedTask(h.store);
+    await expect(h.gateway.complete(req('TAREFA: erro'))).rejects.toThrow('500 do provedor');
+    expect(await h.store.reserveBudget(newId(), 't1', 1)).toMatchObject({ reserved: true });
   });
 });
 

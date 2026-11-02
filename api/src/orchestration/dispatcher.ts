@@ -5,6 +5,7 @@ import { BudgetExceededError } from '../billing/billing.service';
 import { EventBus } from '../events/event-bus';
 import { GatewayService } from '../gateway/gateway.service';
 import { SharedMemory } from '../memory/shared-memory';
+import { withLogContext } from '../observability/log-context';
 import { Store } from '../persistence/store.port';
 import { StrategyRegistry } from '../strategy/strategy-registry';
 import { ToolInvoker } from '../tools/tool-invoker.service';
@@ -62,7 +63,12 @@ export class Dispatcher {
     return results;
   }
 
-  async runOne(task: Task, subtask: Subtask, opts: DispatchOptions): Promise<AgentResult> {
+  /** Every log line written while the subagent runs carries its subtaskId (next to the run's taskId). */
+  runOne(task: Task, subtask: Subtask, opts: DispatchOptions): Promise<AgentResult> {
+    return withLogContext({ subtaskId: subtask.id }, () => this.runSubagent(task, subtask, opts));
+  }
+
+  private async runSubagent(task: Task, subtask: Subtask, opts: DispatchOptions): Promise<AgentResult> {
     const agent = this.agents.resolve(subtask.agent);
     let lastError: Error | null = null;
     for (let call = 1; call <= this.spec.maxCalls; call++) {

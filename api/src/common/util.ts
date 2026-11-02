@@ -1,6 +1,8 @@
 import { createHash, randomUUID } from 'node:crypto';
 
 export const newId = (): string => randomUUID();
+/** Reported by GET /health and the OpenAPI document. Keep in sync with package.json. */
+export const API_VERSION = '0.6.0';
 export const nowIso = (): string => new Date().toISOString();
 export const sha256 = (s: string): string => createHash('sha256').update(s).digest('hex');
 
@@ -114,8 +116,8 @@ export async function settleWithin(promise: Promise<unknown>, ms: number): Promi
   clearTimeout(timer);
 }
 
-export const envNumber = (name: string, fallback: number): number => {
-  const raw = process.env[name];
+export const envNumber = (name: string, fallback: number, env: NodeJS.ProcessEnv = process.env): number => {
+  const raw = env[name];
   const n = raw === undefined ? NaN : Number(raw);
   return Number.isFinite(n) ? n : fallback;
 };

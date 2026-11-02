@@ -1,7 +1,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 
 /** Correlation fields attached to every log line written inside the context. */
-export interface LogContext { taskId?: string; requestId?: string; principal?: string }
+export interface LogContext { taskId?: string; subtaskId?: string; requestId?: string; principal?: string }
 
 const storage = new AsyncLocalStorage<LogContext>();
 

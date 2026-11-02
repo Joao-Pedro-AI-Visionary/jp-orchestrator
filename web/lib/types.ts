@@ -88,6 +88,9 @@ export interface Health {
   postgres: boolean;
   redis: boolean;
   services?: { postgres: DependencyState; redis: DependencyState };
+  /** v0.6.0+: "in-memory" (nothing configured), "persistent" or "mixed". */
+  mode?: "in-memory" | "persistent" | "mixed";
+  version?: string;
 }
 export interface BillingSummary {
   totals: { tokens: number; costUsd: number; calls: number; cacheHits: number; savedUsd: number };
@@ -101,6 +104,8 @@ export interface BillingSummary {
     budgetUsd: number;
     tokens: number;
   }[];
+  /** v0.6.0+: byTask is one page (newest first). */
+  page?: { limit: number; offset: number; total: number };
 }
 export interface GatewayModel {
   id: string;

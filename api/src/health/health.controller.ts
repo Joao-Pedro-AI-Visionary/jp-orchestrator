@@ -2,12 +2,19 @@ import { Controller, Get, Header, HttpCode, Inject, Res } from '@nestjs/common';
 import type Redis from 'ioredis';
 import { Public } from '../auth/auth.decorators';
 import { STORE } from '../common/tokens';
-import { withTimeout } from '../common/util';
+import { API_VERSION, withTimeout } from '../common/util';
 import { REDIS } from '../infrastructure.module';
 import { Store } from '../persistence/store.port';
 
 /** 'memory': the dependency is not configured and the API runs on its in-process adapter (valid, not an outage). */
 export type DependencyState = 'up' | 'down' | 'memory';
+/** 'in-memory': nothing configured (demo/dev, state is lost on restart); 'persistent': Postgres and Redis; 'mixed': one of them. */
+export type RunMode = 'in-memory' | 'persistent' | 'mixed';
+
+export const modeOf = (s: { postgres: DependencyState; redis: DependencyState }): RunMode => {
+  const inMemory = [s.postgres, s.redis].filter((x) => x === 'memory').length;
+  return inMemory === 2 ? 'in-memory' : inMemory === 0 ? 'persistent' : 'mixed';
+};
 interface ResLike { status(code: number): void }
 
 @Controller('health')
@@ -30,7 +37,10 @@ export class HealthController {
   @Public()
   async health() {
     const services = await this.dependencies();
-    return { ok: true, postgres: services.postgres === 'up', redis: services.redis === 'up', services, store: this.store.kind };
+    return {
+      ok: true, postgres: services.postgres === 'up', redis: services.redis === 'up', services, store: this.store.kind,
+      mode: modeOf(services), version: API_VERSION,
+    };
   }
 
   /** Readiness: 503 while a configured Postgres or Redis is unreachable, so the balancer stops routing here. */
@@ -42,7 +52,7 @@ export class HealthController {
     const services = await this.dependencies();
     const ready = services.postgres !== 'down' && services.redis !== 'down';
     if (!ready) res.status(503);
-    return { ready, services };
+    return { ready, services, mode: modeOf(services) };
   }
 
   private async check(ping: () => Promise<boolean>): Promise<DependencyState> {

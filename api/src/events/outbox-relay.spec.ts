@@ -1,4 +1,5 @@
 import { retryConfig } from '../common/retry-horizon';
+import { sleep } from '../common/util';
 import { OutboxEvent } from '../common/types';
 import { MemoryStore } from '../persistence/memory.store';
 import { crashOn, ProcessCrash } from '../test-utils/crash';
@@ -115,5 +116,37 @@ describe('OutboxRelay', () => {
     expect(inbox).toHaveLength(1);
     expect(inbox[0].eventId).toBe(ev.id);
     expect((await db.listOutbox())[0]).toMatchObject({ status: 'delivered', attempts: 1 });
+  });
+
+  it('a batch larger than lease / send time is sent in parallel: the lease never expires mid-batch, nothing is sent twice', async () => {
+    // 10 events x 100 ms each would take 1 s one by one, four times the 250 ms claim lease.
+    process.env.OUTBOX_CLAIM_LEASE_MS = '250';
+    process.env.OUTBOX_TIMEOUT_MS = '125';
+    try {
+      const store = new MemoryStore();
+      const sent: string[] = [];
+      const post: HttpPost = async (_u, _b, headers) => {
+        sent.push(headers['x-jp-event-id']);
+        await sleep(100);
+        return { status: 200 };
+      };
+      const bus = new EventBus();
+      const relayA = new OutboxRelay(store, bus, post);
+      const relayB = new OutboxRelay(store, bus, post);
+      for (let i = 0; i < 10; i++) await enqueue(store);
+
+      const a = relayA.tick();
+      let b = 0;
+      // A second replica polls through and past A's batch.
+      for (let t = 0; t < 12; t++) { await sleep(50); b += await relayB.tick(); }
+      expect(await a).toBe(10);
+      expect(b).toBe(0);
+      expect(sent).toHaveLength(10);
+      expect(new Set(sent).size).toBe(10);
+      expect((await store.listOutbox()).every((e) => e.status === 'delivered' && e.attempts === 1)).toBe(true);
+    } finally {
+      delete process.env.OUTBOX_CLAIM_LEASE_MS;
+      delete process.env.OUTBOX_TIMEOUT_MS;
+    }
   });
 });

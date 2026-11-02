@@ -7,12 +7,14 @@ import { assertSecurityConfig, authConfig } from './auth/auth.config';
 import { assertRetryHorizon, retryConfig } from './common/retry-horizon';
 import { JsonLogger } from './observability/json-logger';
 import { Orchestrator } from './orchestration/orchestrator.service';
+import { assertRetentionConfig, retentionConfig } from './retention/retention.service';
 import { configureApp } from './setup';
 
 async function bootstrap() {
   // Fail fast: no redelivery or tool retry may outlive the idempotency key, and production
   // never runs without API keys, with the public signing secret or with CORS open to all.
   assertRetryHorizon(retryConfig());
+  assertRetentionConfig(retentionConfig());
   assertSecurityConfig();
   const logger = process.env.LOG_FORMAT === 'text' ? undefined : new JsonLogger();
   const app = await NestFactory.create<NestExpressApplication>(AppModule, { rawBody: true, ...(logger ? { logger } : {}) });

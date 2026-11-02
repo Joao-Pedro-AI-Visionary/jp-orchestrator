@@ -73,6 +73,11 @@ export function assertRetryHorizon(c: RetryConfig): void {
   for (const k of Object.keys(ENV) as (keyof RetryConfig)[]) {
     if (!Number.isInteger(c[k]) || c[k] <= 0) throw new Error(`${ENV[k]} deve ser um inteiro positivo (recebido: ${c[k]})`);
   }
+  // A batch is sent in parallel and ends within one timeout plus the status writes; the claim lease
+  // must outlast that with room to spare (2x), or a second relay re-claims events still being sent.
+  if (c.outboxClaimLeaseMs < 2 * c.outboxTimeoutMs) {
+    throw new Error(`OUTBOX_CLAIM_LEASE_MS (${c.outboxClaimLeaseMs}ms) deve ser pelo menos 2x OUTBOX_TIMEOUT_MS (${c.outboxTimeoutMs}ms): o lease venceria no meio do envio`);
+  }
   const ttl = `IDEMPOTENCY_KEY_TTL_MS (${c.idempotencyKeyTtlMs}ms)`;
   const outbox = outboxHorizonMs(c);
   if (outbox >= c.idempotencyKeyTtlMs) {

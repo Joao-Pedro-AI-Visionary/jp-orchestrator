@@ -191,6 +191,11 @@ export class Orchestrator implements OnModuleDestroy {
     const lease = held ?? await this.store.acquireTaskLease(taskId, this.ownerId, this.leaseMs);
     if (!lease) return 'busy';
     const spec = loops().task;
+    // Reservations left by a crashed run would eat the budget forever. Only those older than the task
+    // timeout go: a younger one may belong to a call of a cancelled run that is still settling (the
+    // lease is released after ABORT_GRACE_MS even if that call ignores its signal). Best effort.
+    await this.store.releaseTaskReservations(taskId, spec.timeoutMs)
+      .catch((err) => this.log.warn(`Tarefa ${taskId}: reservas órfãs não liberadas: ${(err as Error).message}`));
     const owner = new AbortController();
     this.owners.set(taskId, owner);
     const timer = setTimeout(() => owner.abort(new TimeoutError('tarefa', spec.timeoutMs)), spec.timeoutMs);

@@ -4,6 +4,21 @@ import {
 
 export type ToolClaim = Pick<ToolCall, 'idempotencyKey' | 'taskId' | 'subtaskId' | 'tool' | 'args' | 'createdAt'>;
 
+/** Result of reserveBudget: reserved=false means the reservation would cross the budget (nothing was reserved). */
+export interface BudgetReservation { reserved: boolean; spentUsd: number; reservedUsd: number; budgetUsd: number }
+
+export interface UsageBucket { tokens: number; costUsd: number; calls: number }
+/** Billing aggregates computed by the store (GROUP BY in Postgres), never by loading every usage row. */
+export interface UsageSummary {
+  totals: UsageBucket & { cacheHits: number; savedUsd: number };
+  byModel: (UsageBucket & { model: string })[];
+  byAgent: (UsageBucket & { agent: string })[];
+}
+export interface TaskCost { taskId: string; title: string; status: string; costUsd: number; budgetUsd: number; tokens: number }
+
+/** Rows removed by one retention pass. */
+export interface PruneResult { webhookInbox: number; toolCalls: number; stepJournal: number }
+
 /**
  * Persistence port. PgStore is the production adapter; MemoryStore backs unit
  * tests and local runs without Postgres. Methods that must be atomic say so.
@@ -92,9 +107,38 @@ export interface Store {
   /** Outbox event count per status (metrics: dead events need an operator). */
   countOutboxByStatus(): Promise<Record<string, number>>;
 
-  /** Atomic: inserts usage and increments task spentUsd, returning the new total. */
-  recordUsage(usage: Usage): Promise<number>;
+  /**
+   * Atomic: reserves amountUsd for one gateway call only if spent + reserved + amount stays within
+   * the budget (row lock on the task in Postgres), so concurrent calls can never overspend together.
+   * Null when the task does not exist (nothing to guard).
+   */
+  reserveBudget(id: string, taskId: string, amountUsd: number): Promise<BudgetReservation | null>;
+  /** Drops a reservation without spending it (the call failed). Idempotent. */
+  releaseBudget(id: string): Promise<void>;
+  /**
+   * Drops the task's reservations created more than olderThanMs ago (orphans of a crashed or timed out run).
+   * Younger ones may belong to a call still in flight and are kept. Returns how many were dropped.
+   */
+  releaseTaskReservations(taskId: string, olderThanMs: number): Promise<number>;
+
+  /**
+   * Atomic: inserts usage and increments task spentUsd, returning the new total. With a
+   * reservationId the reservation is settled (removed) in the same transaction.
+   */
+  recordUsage(usage: Usage, reservationId?: string | null): Promise<number>;
   listUsage(taskId?: string): Promise<Usage[]>;
+  /** Keyset page ordered by (createdAt, id): pass the last row of the previous page as `after`. */
+  listUsagePage(limit: number, after?: { createdAt: string; id: string } | null): Promise<Usage[]>;
+  summarizeUsage(): Promise<UsageSummary>;
+  /** Tasks (newest first) with cost, budget and tokens; total is the task count. */
+  listTaskCosts(limit: number, offset: number): Promise<{ items: TaskCost[]; total: number }>;
+
+  /**
+   * Retention: deletes webhook_inbox rows received before `before`, finished (completed/failed)
+   * tool_calls created before it and step_journal entries written before it, but never rows of a
+   * task that may still run or be resumed (active, awaiting approval or failed).
+   */
+  pruneBefore(before: string): Promise<PruneResult>;
 
   addSnapshot(snapshot: Snapshot): Promise<Snapshot>;
   listSnapshots(taskId: string): Promise<Snapshot[]>;

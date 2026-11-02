@@ -50,9 +50,10 @@ export class AllModelsUnavailableError extends Error {
 /**
  * AI Gateway: single entry point for every model call.
  * Order of the pipeline (cheapest checks first):
- *   1. token limit   2. cache (exact hash, then semantic)   3. budget guard
- *   4. routing (cheapest model of the tier)   5. fallback chain on outage
- *   6. usage + cost recorded in billing
+ *   1. token limit   2. cache (exact hash, then semantic)   3. routing (cheapest model of the tier)
+ *   4. budget reservation for that model's worst case (atomic in the store)   5. fallback chain on
+ *      outage (the failed model's reservation is released, the next model reserves its own)
+ *   6. usage + real cost recorded in billing, settling the reservation in the same transaction
  * The cache is scoped per task (task:agent:tier), so one task never gets another
  * task's answer, and it is bypassed (neither read nor written) on a correction
  * attempt (attempt > 1 or feedback present): the retry must reach the model.
@@ -109,28 +110,36 @@ export class GatewayService {
 
     const chain = this.catalog.chainFor(req.tier).filter((m) => m.maxContextTokens >= promptTokens + maxOut);
     if (!chain.length) throw new AllModelsUnavailableError(req.tier);
-    await this.billing.assertBudget(req.taskId, costOf(chain[0], promptTokens, maxOut));
-
     let fallbackFrom: string | null = null;
     for (const model of chain) {
       throwIfAborted(req.signal);
+      // Reserve this model's worst case before calling it; a fallback to a pricier model reserves again.
+      const reservation = await this.billing.reserve(req.taskId, costOf(model, promptTokens, maxOut));
+      let out: Awaited<ReturnType<LlmProvider['complete']>>;
       try {
-        const out = await this.providers.resolve(model.provider).complete(model, req.prompt, maxOut, req.signal);
-        const costUsd = costOf(model, promptTokens, out.completionTokens);
-        await this.billing.record({
-          taskId: req.taskId, subtaskId: req.subtaskId, agent: req.agent, model: model.id,
-          promptTokens, completionTokens: out.completionTokens, costUsd, savedUsd: 0, cached: false,
-        });
-        const res = { text: out.text, model: model.id, cached: false, promptTokens, completionTokens: out.completionTokens, costUsd, fallbackFrom };
-        if (!bypass) await this.cache.store(scope, req.prompt, { text: out.text, model: model.id, promptTokens, completionTokens: out.completionTokens, costUsd });
-        this.emitCall(req, model.id, false, fallbackFrom, promptTokens + out.completionTokens, costUsd, started);
-        return res;
+        out = await this.providers.resolve(model.provider).complete(model, req.prompt, maxOut, req.signal);
       } catch (err) {
+        await this.billing.release(reservation);
         if (!(err instanceof ProviderUnavailableError)) throw err;
         this.stats.fallbacks++;
         metrics.inc('jpo_gateway_fallbacks_total', { model: model.id });
         fallbackFrom = fallbackFrom ?? model.id;
+        continue;
       }
+      const costUsd = costOf(model, promptTokens, out.completionTokens);
+      try {
+        await this.billing.record({
+          taskId: req.taskId, subtaskId: req.subtaskId, agent: req.agent, model: model.id,
+          promptTokens, completionTokens: out.completionTokens, costUsd, savedUsd: 0, cached: false,
+        }, reservation);
+      } catch (err) {
+        await this.billing.release(reservation);
+        throw err;
+      }
+      const res = { text: out.text, model: model.id, cached: false, promptTokens, completionTokens: out.completionTokens, costUsd, fallbackFrom };
+      if (!bypass) await this.cache.store(scope, req.prompt, { text: out.text, model: model.id, promptTokens, completionTokens: out.completionTokens, costUsd });
+      this.emitCall(req, model.id, false, fallbackFrom, promptTokens + out.completionTokens, costUsd, started);
+      return res;
     }
     throw new AllModelsUnavailableError(req.tier);
   }

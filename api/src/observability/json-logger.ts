@@ -6,7 +6,7 @@ const TASK_ID = /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\
 
 /**
  * One JSON object per line on stdout (stderr for errors): ts, level, context, msg plus the
- * correlation fields of the current log context (taskId, requestId, principal). When no
+ * correlation fields of the current log context (taskId, subtaskId, requestId, principal). When no
  * context carries a taskId, the first UUID in the message is used ("Tarefa <id>: ...").
  */
 export class JsonLogger implements LoggerService {
