@@ -1,6 +1,6 @@
 "use client";
 
-import { forwardRef, useState } from "react";
+import { forwardRef, useRef, useState } from "react";
 import { Loader2, Send } from "lucide-react";
 import type { Dashboard } from "@/lib/use-dashboard";
 
@@ -37,7 +37,14 @@ export const NewTaskForm = forwardRef<HTMLInputElement, { d: Dashboard }>(functi
   const [budget, setBudget] = useState("0.05");
   const [approval, setApproval] = useState(false);
   const [localError, setLocalError] = useState<string | null>(null);
+  // Idempotency-Key of the current draft: reused when the same draft is sent again (retry after
+  // a lost response or an error), replaced by any edit, dropped once the task is created.
+  const draftKey = useRef<string | null>(null);
   const busy = !!d.pending.create;
+  const edit = <T,>(set: (v: T) => void) => (v: T) => {
+    draftKey.current = null;
+    set(v);
+  };
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -46,7 +53,13 @@ export const NewTaskForm = forwardRef<HTMLInputElement, { d: Dashboard }>(functi
     if (!description.trim()) return setLocalError("Descreva o que os subagentes devem fazer.");
     if (!Number.isFinite(budgetUsd) || budgetUsd <= 0) return setLocalError("O orçamento deve ser maior que zero.");
     setLocalError(null);
-    await d.createTask({ title: title.trim(), description: description.trim(), budgetUsd, requiresApproval: approval });
+    draftKey.current ??= crypto.randomUUID();
+    const created = await d.createTask(
+      { title: title.trim(), description: description.trim(), budgetUsd, requiresApproval: approval },
+      draftKey.current,
+    );
+    if (!created) return; // keep the draft (and its key) so "Criar tarefa" again is a safe retry
+    draftKey.current = null;
     setTitle("");
     setDescription("");
   }
@@ -66,6 +79,7 @@ export const NewTaskForm = forwardRef<HTMLInputElement, { d: Dashboard }>(functi
             data-testid={`preset-${i}`}
             className="btn"
             onClick={() => {
+              draftKey.current = null;
               setTitle(p.title);
               setDescription(p.description);
               setBudget(String(p.budget));
@@ -88,7 +102,7 @@ export const NewTaskForm = forwardRef<HTMLInputElement, { d: Dashboard }>(functi
             data-testid="task-title-input"
             className="field"
             value={title}
-            onChange={(e) => setTitle(e.target.value)}
+            onChange={(e) => edit(setTitle)(e.target.value)}
             placeholder="Ex.: Criar endpoint de relatórios"
             maxLength={140}
           />
@@ -102,7 +116,7 @@ export const NewTaskForm = forwardRef<HTMLInputElement, { d: Dashboard }>(functi
             data-testid="task-desc-input"
             className="field min-h-28 py-3"
             value={description}
-            onChange={(e) => setDescription(e.target.value)}
+            onChange={(e) => edit(setDescription)(e.target.value)}
             placeholder="O que deve ser feito, critérios de aceite e limites."
           />
         </div>
@@ -119,7 +133,7 @@ export const NewTaskForm = forwardRef<HTMLInputElement, { d: Dashboard }>(functi
               min="0.01"
               className="field"
               value={budget}
-              onChange={(e) => setBudget(e.target.value)}
+              onChange={(e) => edit(setBudget)(e.target.value)}
             />
           </div>
           <label htmlFor="task-approval" className="flex min-h-12 cursor-pointer items-center gap-3 text-sm text-neutral-200">
@@ -129,7 +143,7 @@ export const NewTaskForm = forwardRef<HTMLInputElement, { d: Dashboard }>(functi
               type="checkbox"
               className="size-6 accent-brand"
               checked={approval}
-              onChange={(e) => setApproval(e.target.checked)}
+              onChange={(e) => edit(setApproval)(e.target.checked)}
             />
             Exigir aprovação humana
           </label>

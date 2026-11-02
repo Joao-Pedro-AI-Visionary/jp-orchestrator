@@ -1,7 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, API_URL } from "./api";
+import { api, EVENTS_URL } from "./api";
+import { TASK_STATUS } from "./status";
 import type {
   BillingSummary,
   GatewayCall,
@@ -10,6 +11,7 @@ import type {
   Health,
   ServerEvent,
   Task,
+  TaskStatus,
   TaskDetail,
   WebhookItem,
 } from "./types";
@@ -23,17 +25,6 @@ export interface Toast {
 
 const errMsg = (e: unknown) => (e instanceof Error ? e.message : "Erro inesperado.");
 
-const EVENT_LABEL: Record<string, string> = {
-  "task.created": "Nova tarefa criada",
-  "task.status": "Status da tarefa atualizado",
-  "subtask.status": "Subagente atualizado",
-  "gateway.call": "Chamada ao gateway registrada",
-  "usage.recorded": "Consumo registrado",
-  "snapshot.created": "Novo snapshot de contexto",
-  "approval.requested": "Aprovação humana solicitada",
-  "approval.resolved": "Aprovação resolvida",
-  "webhook.delivered": "Webhook recebido",
-};
 
 export function useDashboard() {
   const [health, setHealth] = useState<Health | null>(null);
@@ -61,6 +52,7 @@ export function useDashboard() {
   const [toasts, setToasts] = useState<Toast[]>([]);
 
   const selectedRef = useRef<string | null>(null);
+  const reloadRef = useRef<() => void>(() => undefined);
   const timers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
   const seq = useRef(0);
 
@@ -114,6 +106,10 @@ export function useDashboard() {
   }, [refreshHealth, refreshTasks, refreshBilling, refreshModels, refreshStats, refreshWebhooks, refreshDetail]);
 
   useEffect(() => {
+    reloadRef.current = reloadAll;
+  }, [reloadAll]);
+
+  useEffect(() => {
     reloadAll();
     const t = setInterval(() => void refreshHealth(), 15000);
     return () => clearInterval(t);
@@ -142,9 +138,20 @@ export function useDashboard() {
         }, 200),
       );
     };
-    const es = new EventSource(`${API_URL}/events`);
-    es.onopen = () => setLive(true);
-    es.onerror = () => setLive(false);
+    const es = new EventSource(EVENTS_URL);
+    // Events sent while the stream was down are lost: after a reconnect, refetch everything.
+    let dropped = false;
+    es.onopen = () => {
+      setLive(true);
+      if (dropped) {
+        dropped = false;
+        reloadRef.current();
+      }
+    };
+    es.onerror = () => {
+      setLive(false);
+      dropped = true;
+    };
     es.onmessage = (msg) => {
       let ev: ServerEvent;
       try {
@@ -152,9 +159,13 @@ export function useDashboard() {
       } catch {
         return;
       }
-      setLiveMessage(EVENT_LABEL[ev.type] ?? ev.type);
       const sel = selectedRef.current;
       const mine = sel !== null && ev.taskId === sel;
+      // Screen readers hear only status changes of the selected task, not every event of the stream.
+      const status = ev.payload?.status as TaskStatus | undefined;
+      if (mine && ev.type === "task.status" && status && TASK_STATUS[status]) {
+        setLiveMessage(`Tarefa selecionada: ${TASK_STATUS[status].label}`);
+      }
       switch (ev.type) {
         case "task.created":
         case "task.status":
@@ -197,13 +208,16 @@ export function useDashboard() {
     };
   }, [refreshTasks, refreshBilling, refreshStats, refreshWebhooks, refreshDetail]);
 
+  /** Runs fn with its button in the pending state; errors become a toast. Resolves true on success. */
   const withPending = useCallback(
-    async (key: string, fn: () => Promise<void>) => {
+    async (key: string, fn: () => Promise<void>): Promise<boolean> => {
       setPending((p) => ({ ...p, [key]: true }));
       try {
         await fn();
+        return true;
       } catch (err) {
         pushToast("error", errMsg(err));
+        return false;
       } finally {
         setPending((p) => ({ ...p, [key]: false }));
       }
@@ -211,10 +225,14 @@ export function useDashboard() {
     [pushToast],
   );
 
+  /**
+   * idempotencyKey belongs to the form draft: a retry of the same draft (lost response,
+   * double click) sends the same key and gets the same task instead of a duplicate.
+   */
   const createTask = useCallback(
-    (body: { title: string; description: string; budgetUsd: number; requiresApproval: boolean }) =>
+    (body: { title: string; description: string; budgetUsd: number; requiresApproval: boolean }, idempotencyKey: string) =>
       withPending("create", async () => {
-        const task = await api.createTask(body, crypto.randomUUID());
+        const task = await api.createTask(body, idempotencyKey);
         pushToast("success", "Tarefa criada. Os subagentes já estão sendo planejados.");
         await refreshTasks();
         select(task.id);

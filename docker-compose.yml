@@ -29,7 +29,11 @@ services:
       DATABASE_URL: postgres://jp:jp@postgres:5432/orchestrator
       REDIS_URL: redis://redis:6379
       WEBHOOK_URL: http://api:3001/webhooks/inbox
-      WEBHOOK_SECRET: ${WEBHOOK_SECRET:-dev-secret-change-me}
+      # The image runs with NODE_ENV=production: the API refuses to boot without API keys or with the
+      # public default secret. Generate them once into .env (see README, "Como rodar").
+      API_KEYS: ${API_KEYS:?defina API_KEYS no .env (veja o README)}
+      WEBHOOK_SECRET: ${WEBHOOK_SECRET:?defina WEBHOOK_SECRET no .env (veja o README)}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
       MOCK_LATENCY_MS: ${MOCK_LATENCY_MS:-700}
       MAX_PARALLEL: 4
     ports: ["3001:3001"]
@@ -37,7 +41,8 @@ services:
       postgres: { condition: service_healthy }
       redis: { condition: service_healthy }
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3001/health"]
+      # readiness: 503 while Postgres or Redis is unreachable
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3001/health/ready"]
       interval: 3s
       retries: 30
 
@@ -46,6 +51,8 @@ services:
       context: ./web
       args:
         NEXT_PUBLIC_API_URL: http://localhost:3001
+        # baked into the browser bundle: the dashboard's own key (see README)
+        NEXT_PUBLIC_API_KEY: ${NEXT_PUBLIC_API_KEY:?defina NEXT_PUBLIC_API_KEY no .env (veja o README)}
     ports: ["3000:3000"]
     depends_on:
       api: { condition: service_healthy }

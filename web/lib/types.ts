@@ -64,6 +64,8 @@ export interface Approval {
   note: string | null;
   requestedAt: string;
   resolvedAt: string | null;
+  /** Who approved or rejected (API key identity). */
+  decidedBy?: string | null;
 }
 export interface MemoryEntry {
   key: string;
@@ -79,10 +81,13 @@ export interface TaskDetail {
   approval: Approval | null;
   memory: MemoryEntry[];
 }
+/** "memory": not configured, the API runs on its in-process adapter (valid, not an outage). */
+export type DependencyState = "up" | "down" | "memory";
 export interface Health {
   ok: boolean;
   postgres: boolean;
   redis: boolean;
+  services?: { postgres: DependencyState; redis: DependencyState };
 }
 export interface BillingSummary {
   totals: { tokens: number; costUsd: number; calls: number; cacheHits: number; savedUsd: number };

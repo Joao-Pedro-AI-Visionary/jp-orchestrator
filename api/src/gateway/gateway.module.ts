@@ -1,4 +1,5 @@
 import { Controller, Get, Module, NotFoundException, Param, Post } from '@nestjs/common';
+import { RateLimited, RequireRole } from '../auth/auth.decorators';
 import { PROVIDER_REGISTRY } from '../common/tokens';
 import { BillingModule } from '../billing/billing.module';
 import { StrategyRegistry } from '../strategy/strategy-registry';
@@ -17,6 +18,8 @@ export class GatewayController {
 
   /** Simulates a provider outage (or recovery) so the fallback chain can be observed live. */
   @Post('models/:id/toggle')
+  @RequireRole('admin')
+  @RateLimited()
   toggle(@Param('id') id: string) {
     const model = this.catalog.get(id);
     if (!model) throw new NotFoundException(`Modelo ${id} não existe`);

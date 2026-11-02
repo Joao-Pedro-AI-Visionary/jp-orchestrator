@@ -3,6 +3,7 @@ import { OutboxEvent } from '../common/types';
 import { STORE, TOOL_REGISTRY } from '../common/tokens';
 import { retryConfig } from '../common/retry-horizon';
 import { canonicalJson, newId, nowIso, runWithTimeout, sha256, sleep, throwIfAborted, TimeoutError } from '../common/util';
+import { metrics, secondsSince } from '../observability/metrics';
 import { Store } from '../persistence/store.port';
 import { KeyedStrategy, StrategyRegistry } from '../strategy/strategy-registry';
 
@@ -89,7 +90,19 @@ export class ToolInvoker {
     return inv.idempotencyKey ?? sha256(canonicalJson([inv.taskId, inv.subtaskId, inv.tool, inv.args]));
   }
 
+  /** Counts every call in jpo_tool_calls_total{tool,outcome}: executed, replay, refused or error. */
   async invoke(inv: ToolInvocation, signal?: AbortSignal): Promise<{ result: Record<string, unknown>; replay: boolean; key: string }> {
+    try {
+      const out = await this.invokeOnce(inv, signal);
+      metrics.inc('jpo_tool_calls_total', { tool: inv.tool, outcome: out.replay ? 'replay' : 'executed' });
+      return out;
+    } catch (err) {
+      metrics.inc('jpo_tool_calls_total', { tool: inv.tool, outcome: err instanceof ToolCallRefusedError ? 'refused' : 'error' });
+      throw err;
+    }
+  }
+
+  private async invokeOnce(inv: ToolInvocation, signal?: AbortSignal): Promise<{ result: Record<string, unknown>; replay: boolean; key: string }> {
     throwIfAborted(signal);
     const key = ToolInvoker.keyFor(inv);
     const existing = await this.store.findToolCall(key);
@@ -112,6 +125,7 @@ export class ToolInvoker {
 
     this.executions++;
     let result: Record<string, unknown>;
+    const started = process.hrtime.bigint();
     try {
       result = await runWithTimeout((s) => handler.execute(inv.args, { idempotencyKey: key, attempt, signal: s }),
         this.leaseMs, `ferramenta ${inv.tool}`, { parent: signal, graceMs: 0 });
@@ -122,6 +136,8 @@ export class ToolInvoker {
         await this.store.releaseToolCall(key, attempt, (err as Error).message).catch(() => undefined);
       }
       throw err;
+    } finally {
+      metrics.observe('jpo_tool_call_duration_seconds', secondsSince(started), { tool: inv.tool });
     }
     const saved = await this.store.completeToolCallWithOutbox(
       key, attempt, result,

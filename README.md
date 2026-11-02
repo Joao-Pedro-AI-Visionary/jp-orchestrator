@@ -156,14 +156,54 @@ heartbeat (até `TASK_LEASE_MS` / 3). Deploy a partir da 0.3.x: por substituiç�
   O SQL do `PgStore` e as migrações são testados num Postgres real em WASM (PGlite) em `pg.store.spec.ts`.
 - Eventos gravados no inbox antes da v0.3.2 não têm `event_id`, então uma reentrega deles não é deduplicada.
 
+### Segurança
+
+- **API key com papéis.** `API_KEYS="chave:papel[:nome],..."`, papéis `viewer` < `operator` < `approver` < `admin`
+  (cada um inclui os anteriores). Leitura pede `viewer`; criar e retomar tarefa, `operator`; aprovar e rejeitar,
+  `approver`; derrubar modelo do gateway, `admin`. Chave em `X-API-Key` ou `Authorization: Bearer`; o SSE e o CSV
+  aceitam também `?api_key=` ou o cookie `jp_api_key`. As chaves ficam só como sha256 em memória.
+- **Modo aberto** só com `API_KEYS` vazio **e** `NODE_ENV` diferente de `production` (dev local e testes). Em produção a
+  API não sobe sem chaves, com o segredo de assinatura padrão (`dev-secret-change-me`) ou com `CORS_ORIGINS=*`.
+- **Aprovador registrado:** quem aprova ou rejeita fica em `approvals.decided_by`, no evento `approval.resolved` e no
+  evento assinado `task.completed`/`task.rejected` (`decidedBy`).
+- **CORS** só para `CORS_ORIGINS`. **Rate limit** em memória nas rotas que mudam estado (`RATE_LIMIT_MAX` por
+  `RATE_LIMIT_WINDOW_MS`, por chave e IP, por réplica: com N réplicas o limite efetivo é N vezes maior; para um limite
+  global use o proxy de borda). **Validação:** corpo JSON até `BODY_LIMIT` (413), tipos dos campos checados (400),
+  nota de aprovação até 2000 caracteres.
+- **Receptor de webhook** devolve 401 e não grava requisição sem assinatura válida.
+- **Limite conhecido:** `NEXT_PUBLIC_API_KEY` vai no bundle do navegador. Quem abre o dashboard lê a chave, então sirva o
+  dashboard só para quem pode ter aquele papel (rede interna, proxy com SSO). Use uma chave `approver` se o dashboard não
+  precisar derrubar modelos (o toggle do gateway pede `admin`). O dashboard manda a chave em `?api_key=` no SSE e no CSV,
+  que pode aparecer em logs de proxy; o cookie `jp_api_key` evita isso quando API e dashboard estão no mesmo site.
+  Sessão por usuário (OIDC) ainda não existe. O rate limit usa `req.ip`: atrás de proxy, sem `trust proxy`, todos os
+  clientes de uma mesma chave dividem o limite.
+
+### Observabilidade
+
+- **Logs JSON**, um objeto por linha (`ts`, `level`, `context`, `msg`), com `taskId` em tudo o que a execução de uma
+  tarefa escreve (AsyncLocalStorage), `requestId` (`X-Request-Id`) e `principal` nas linhas de acesso HTTP. A query
+  string não vai para o log, então `?api_key=` não vaza. `LOG_FORMAT=text` volta ao formato colorido do Nest.
+- **`GET /metrics`** (Prometheus, chave `viewer`): tarefas por status, eventos do outbox por status e `jpo_outbox_dead`,
+  chamadas, latência, cache e fallbacks do gateway, chamadas de ferramenta por resultado e requisições HTTP. Lista
+  completa em `docs/api-contract.md`. No Prometheus: `authorization: { credentials: <chave viewer> }` no scrape job.
+- **`GET /health`** é liveness (sempre 200). **`GET /health/ready`** devolve 503 enquanto um Postgres ou Redis
+  configurado não responde; o healthcheck do compose usa o readiness. Em modo memória os dois aparecem como `memory`
+  e o dashboard mostra "em memória" em cinza, não como falha.
+
 ### Como rodar
 
 Pré-requisitos: Docker com Compose, Node 22.
 
+A imagem da API roda com `NODE_ENV=production`, então o compose exige as chaves e o segredo num `.env`:
+
 ```bash
+k=$(openssl rand -hex 24)
+printf 'API_KEYS=%s:admin:dashboard\nNEXT_PUBLIC_API_KEY=%s\nWEBHOOK_SECRET=%s\n' "$k" "$k" "$(openssl rand -hex 24)" > .env
+
 docker compose up -d --build        # postgres, redis, api (:3001), web (:3000)
 open http://localhost:3000
 
+export API_KEY=$k                   # os scripts e o e2e mandam a chave em X-API-Key
 npm run loop:run                    # dispara um loop real e mostra o pico de subagentes em paralelo
 npm run billing:report              # relatório de consumo em reports/billing-AAAA-MM-DD.md
 npm run budget:check -- --warn 0.8  # sai com código 1 se alguma tarefa passou de 80% do orçamento
@@ -178,7 +218,8 @@ npm run prepush                     # lint + typecheck + build + testes
 npx playwright install chromium && npm run e2e   # e2e contra o stack rodando
 ```
 
-Sem `DATABASE_URL` e `REDIS_URL` a API roda inteira em memória. Variáveis em `.env.example`.
+Sem `DATABASE_URL` e `REDIS_URL` a API roda inteira em memória; sem `API_KEYS` (fora de produção), sem autenticação.
+Variáveis em `.env.example`.
 Contrato da API em `docs/api-contract.md`. Screenshots do e2e em `docs/screenshots/`.
 
 ### Vídeos de demonstração
@@ -263,10 +304,28 @@ This version ships a deterministic `MockProvider`; real providers plug in as ano
 - Tests with `crash` in their name kill the process at both points; they assert the same ids/key are reused and
   that a receiver or downstream honoring the key applies the effect once.
 
+### Security and observability
+
+- **API keys with roles**: `API_KEYS="key:role[:name],..."`, roles `viewer` < `operator` < `approver` < `admin`.
+  Reads need `viewer`, creating/resuming tasks `operator`, approve/reject `approver`, taking a gateway model down
+  `admin`. Key in `X-API-Key` or `Authorization: Bearer`; SSE and the CSV export also accept `?api_key=` or the
+  `jp_api_key` cookie. Open mode (no auth) only with an empty `API_KEYS` outside `NODE_ENV=production`; in production
+  the API refuses to boot without keys, with the default signing secret or with `CORS_ORIGINS=*`.
+- The approver identity is stored (`approvals.decided_by`) and sent in `approval.resolved` and in the signed
+  `task.completed`/`task.rejected` events. CORS is limited to `CORS_ORIGINS`; mutating endpoints are rate limited in
+  memory per key and IP (per replica); bodies are capped at `BODY_LIMIT` (413) and field types are checked (400).
+  The webhook receiver answers 401 and stores nothing for an unverified request.
+- `NEXT_PUBLIC_API_KEY` ships in the browser bundle: only serve the dashboard to people allowed that role.
+- JSON logs with `taskId`, `requestId` and `principal`; Prometheus `/metrics` (viewer key); `/health` is liveness,
+  `/health/ready` answers 503 while a configured Postgres or Redis is down.
+
 ### Run it
 
 ```bash
+k=$(openssl rand -hex 24)      # the API image runs with NODE_ENV=production: keys and secret are required
+printf 'API_KEYS=%s:admin:dashboard\nNEXT_PUBLIC_API_KEY=%s\nWEBHOOK_SECRET=%s\n' "$k" "$k" "$(openssl rand -hex 24)" > .env
 docker compose up -d --build   # http://localhost:3000 (UI), http://localhost:3001 (API)
+export API_KEY=$k              # scripts and e2e send it as X-API-Key
 npm run loop:run               # real orchestration loop with parallel subagents
 npm run billing:report         # token and cost report
 npm test                       # unit tests

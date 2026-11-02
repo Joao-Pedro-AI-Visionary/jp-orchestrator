@@ -23,13 +23,16 @@ export function Dashboard() {
 
   return (
     <>
+    <a href="#conteudo" className="skip-link" data-testid="skip-link">
+      Pular para o conteúdo
+    </a>
     <div className="topbar">
       <div className="mx-auto max-w-[1400px] px-4 py-3 sm:px-6">
         <Header d={d} onNewTask={focusForm} />
       </div>
     </div>
     <div className="mx-auto flex max-w-[1400px] flex-col gap-6 px-4 py-6 sm:px-6">
-      <main className="flex flex-col gap-6" id="conteudo">
+      <main className="flex flex-col gap-6 focus:outline-none" id="conteudo" tabIndex={-1}>
         <Kpis d={d} />
         <div className="grid gap-6 lg:grid-cols-12">
           <div className="flex min-w-0 flex-col gap-6 lg:col-span-5">

@@ -4,6 +4,7 @@ import { PROVIDER_REGISTRY, SEMANTIC_CACHE } from '../common/tokens';
 import { envNumber, estimateTokens, throwIfAborted } from '../common/util';
 import { BillingService } from '../billing/billing.service';
 import { EventBus } from '../events/event-bus';
+import { metrics, secondsSince } from '../observability/metrics';
 import { StrategyRegistry } from '../strategy/strategy-registry';
 import { LlmProvider, ProviderUnavailableError } from './llm-provider';
 import { costOf, ModelCatalog } from './model-catalog';
@@ -82,6 +83,8 @@ export class GatewayService {
   async complete(req: GatewayRequest): Promise<GatewayResponse> {
     throwIfAborted(req.signal);
     this.stats.requests++;
+    metrics.inc('jpo_gateway_requests_total');
+    const started = process.hrtime.bigint();
     const promptTokens = estimateTokens(req.prompt);
     if (promptTokens > this.maxPromptTokens) {
       this.stats.rejectedTokenLimit++;
@@ -95,11 +98,12 @@ export class GatewayService {
     const hit = bypass ? null : await this.cache.lookup(scope, req.prompt);
     if (hit) {
       this.stats.cacheHits++;
+      metrics.inc('jpo_gateway_cache_hits_total');
       await this.billing.record({
         taskId: req.taskId, subtaskId: req.subtaskId, agent: req.agent, model: hit.entry.model,
         promptTokens: 0, completionTokens: 0, costUsd: 0, savedUsd: hit.entry.costUsd, cached: true,
       });
-      this.emitCall(req, hit.entry.model, true, null, 0, 0);
+      this.emitCall(req, hit.entry.model, true, null, 0, 0, started);
       return { ...hit.entry, cached: true, costUsd: 0, fallbackFrom: null };
     }
 
@@ -119,19 +123,25 @@ export class GatewayService {
         });
         const res = { text: out.text, model: model.id, cached: false, promptTokens, completionTokens: out.completionTokens, costUsd, fallbackFrom };
         if (!bypass) await this.cache.store(scope, req.prompt, { text: out.text, model: model.id, promptTokens, completionTokens: out.completionTokens, costUsd });
-        this.emitCall(req, model.id, false, fallbackFrom, promptTokens + out.completionTokens, costUsd);
+        this.emitCall(req, model.id, false, fallbackFrom, promptTokens + out.completionTokens, costUsd, started);
         return res;
       } catch (err) {
         if (!(err instanceof ProviderUnavailableError)) throw err;
         this.stats.fallbacks++;
+        metrics.inc('jpo_gateway_fallbacks_total', { model: model.id });
         fallbackFrom = fallbackFrom ?? model.id;
       }
     }
     throw new AllModelsUnavailableError(req.tier);
   }
 
-  private emitCall(req: GatewayRequest, model: string, cached: boolean, fallbackFrom: string | null, tokens: number, costUsd: number) {
-    this.bus.emit('gateway.call', req.taskId, { model, cached, fallbackFrom, tokens, costUsd, agent: req.agent, tier: req.tier });
+  private emitCall(req: GatewayRequest, model: string, cached: boolean, fallbackFrom: string | null, tokens: number, costUsd: number, started: bigint) {
+    const seconds = secondsSince(started);
+    metrics.inc('jpo_gateway_calls_total', { model, cached: String(cached) });
+    metrics.observe('jpo_gateway_call_duration_seconds', seconds, { model, cached: String(cached) });
+    this.bus.emit('gateway.call', req.taskId, {
+      model, cached, fallbackFrom, tokens, costUsd, agent: req.agent, tier: req.tier, durationMs: Math.round(seconds * 1000),
+    });
   }
 
   snapshotStats() {
