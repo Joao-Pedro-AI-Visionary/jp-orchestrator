@@ -74,6 +74,22 @@ describe('HTTP API with API keys', () => {
   beforeAll(async () => { ctx = await boot(BASE_ENV); });
   afterAll(() => ctx.app.close());
 
+  it('serves the generated OpenAPI document at /docs/openapi.json and Swagger UI at /docs', async () => {
+    const doc = await (await fetch(`${ctx.url}/docs/openapi.json`)).json() as {
+      openapi: string; info: { version: string }; paths: Record<string, Record<string, unknown>>; components: { securitySchemes: Record<string, unknown> };
+    };
+    expect(doc.openapi).toMatch(/^3\./);
+    expect(doc.info.version).toBe('0.6.0');
+    for (const path of ['/tasks', '/tasks/{id}', '/tasks/{id}/approve', '/billing/summary', '/health', '/health/ready', '/metrics']) {
+      expect(doc.paths[path]).toBeDefined();
+    }
+    expect(Object.keys(doc.paths['/tasks'])).toEqual(expect.arrayContaining(['get', 'post']));
+    expect(doc.components.securitySchemes).toHaveProperty('apiKey');
+    const ui = await fetch(`${ctx.url}/docs`);
+    expect(ui.status).toBe(200);
+    expect(await ui.text()).toContain('swagger');
+  });
+
   it('401 without a key, 403 below the route role, 2xx at or above it', async () => {
     const { call } = ctx;
     expect((await call('/tasks')).status).toBe(401);
@@ -197,7 +213,7 @@ describe('HTTP API with API keys', () => {
     expect(await (await call('/health')).json()).toMatchObject({ ok: true, services: { postgres: 'memory', redis: 'memory' } });
     const ready = await call('/health/ready');
     expect(ready.status).toBe(200);
-    expect(await ready.json()).toEqual({ ready: true, services: { postgres: 'memory', redis: 'memory' } });
+    expect(await ready.json()).toEqual({ ready: true, services: { postgres: 'memory', redis: 'memory' }, mode: 'in-memory' });
     expect((await call('/metrics')).status).toBe(401);
     const created = await (await call('/tasks', { key: 'operator', body: task('Para métricas') })).json();
     await until(async () => (await (await call(`/tasks/${created.id}`, { key: 'viewer' })).json()).task.status, (s) => s === 'completed');
@@ -240,7 +256,7 @@ describe('HTTP API: rate limit, readiness 503 and open mode', () => {
     apps.push(app);
     const ready = await call('/health/ready');
     expect(ready.status).toBe(503);
-    expect(await ready.json()).toEqual({ ready: false, services: { postgres: 'down', redis: 'memory' } });
+    expect(await ready.json()).toEqual({ ready: false, services: { postgres: 'down', redis: 'memory' }, mode: 'mixed' });
     expect((await call('/health')).status).toBe(200);
   });
 

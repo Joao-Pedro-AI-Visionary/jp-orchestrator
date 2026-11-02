@@ -27,7 +27,7 @@ describe('PgStore (PGlite)', () => {
   it('migrates a v0.3.1 database once, keeps legacy rows completed and lets old-style inserts stay valid', async () => {
     await ctx.db.exec(`INSERT INTO tool_calls (idempotency_key, task_id, tool, args, result) VALUES ('old', gen_random_uuid(), 't', '{}', '{"x":1}');
       INSERT INTO webhook_inbox (id, event, verified, signature, payload) VALUES (gen_random_uuid(), 'e', true, 's', '{}'), (gen_random_uuid(), 'e', true, 's', '{}');`);
-    expect(await store.migrate(MIGRATIONS)).toEqual(['0001_webhook_inbox_event_id.sql', '0002_tool_calls_started_lease.sql', '0003_task_lease_tool_failed.sql', '0004_approver_idempotency_fingerprint.sql']);
+    expect(await store.migrate(MIGRATIONS)).toEqual(['0001_webhook_inbox_event_id.sql', '0002_tool_calls_started_lease.sql', '0003_task_lease_tool_failed.sql', '0004_approver_idempotency_fingerprint.sql', '0005_budget_reservations_retention.sql']);
     expect(await store.migrate(MIGRATIONS)).toEqual([]);
     await ctx.db.exec(SCHEMA);
     expect(await store.findToolCall('old')).toMatchObject({ status: 'completed', attempts: 1, result: { x: 1 } });
@@ -79,5 +79,23 @@ describe('PgStore (PGlite)', () => {
     const inbox = await store.listInbox(50);
     expect(inbox).toHaveLength(3);
     expect(inbox.filter((e) => e.eventId === 'e1')).toHaveLength(1);
+  });
+
+  it('usage keyset pages are exact even for rows stored with microseconds in the same millisecond', async () => {
+    await store.migrate(MIGRATIONS);
+    const taskId = newId();
+    await ctx.db.exec(`INSERT INTO usage_records (id, task_id, agent, model, prompt_tokens, completion_tokens, cost_usd, created_at) VALUES
+      (gen_random_uuid(), '${taskId}', 'a', 'm', 1, 0, 0, '2026-11-01T12:00:00.000100Z'),
+      (gen_random_uuid(), '${taskId}', 'a', 'm', 2, 0, 0, '2026-11-01T12:00:00.000200Z'),
+      (gen_random_uuid(), '${taskId}', 'a', 'm', 3, 0, 0, '2026-11-01T12:00:00.000300Z')`);
+    const seen: number[] = [];
+    let after: Awaited<ReturnType<PgStore['listUsagePage']>>[number] | null = null;
+    for (let i = 0; i < 10; i++) {
+      const page = await store.listUsagePage(1, after);
+      if (!page.length) break;
+      seen.push(page[0].promptTokens);
+      after = page[0];
+    }
+    expect(seen.sort()).toEqual([1, 2, 3]);
   });
 });

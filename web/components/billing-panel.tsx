@@ -70,7 +70,14 @@ export function BillingPanel({ d }: { d: Dashboard }) {
           <Bars title="Por modelo" testId="bars-model" tone="bg-brand" rows={b.byModel.map((m) => ({ name: m.model, cost: m.costUsd, tokens: m.tokens }))} />
           <Bars title="Por agente" testId="bars-agent" tone="bg-accent" rows={b.byAgent.map((a) => ({ name: a.agent, cost: a.costUsd, tokens: a.tokens }))} />
           <div>
-            <h3 className="text-sm font-semibold text-neutral-200">Por tarefa</h3>
+            <h3 className="text-sm font-semibold text-neutral-200">
+              Por tarefa
+              {b.page && b.page.total > b.byTask.length && (
+                <span className="ml-2 text-xs font-normal text-neutral-400" data-testid="billing-task-page">
+                  {b.byTask.length} mais recentes de {b.page.total}
+                </span>
+              )}
+            </h3>
             {b.byTask.length === 0 ? (
               <div className="mt-2">
                 <EmptyState testId="billing-tasks-empty" text="Nenhuma tarefa faturada ainda." />

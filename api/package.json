@@ -1,6 +1,6 @@
 {
   "name": "@jp-orchestrator/api",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "private": true,
   "license": "MIT",
   "scripts": {
@@ -15,6 +15,7 @@
     "@nestjs/common": "11.2.8",
     "@nestjs/core": "11.2.8",
     "@nestjs/platform-express": "11.2.8",
+    "@nestjs/swagger": "11.4.7",
     "ioredis": "5.11.1",
     "pg": "8.23.1",
     "reflect-metadata": "0.2.2",

@@ -2,11 +2,13 @@ import {
   Approval, InboxEntry, OutboxEvent, Snapshot, Subtask, Task, TaskLease, TaskStatus, TERMINAL_STATUSES, ToolCall, Usage,
 } from '../common/types';
 import { nowIso, round6 } from '../common/util';
-import { Store, ToolClaim } from './store.port';
+import { BudgetReservation, PruneResult, Store, TaskCost, ToolClaim, UsageBucket, UsageSummary } from './store.port';
 
 const clone = <T>(v: T): T => structuredClone(v);
 const countBy = (values: string[]) => values.reduce<Record<string, number>>((acc, v) => ({ ...acc, [v]: (acc[v] ?? 0) + 1 }), {});
 const REOPENABLE: TaskStatus[] = ['failed', 'queued', 'planning', 'running', 'merging'];
+/** A task in one of these may still run or be resumed: retention keeps its journal and tool calls. */
+export const RETAINED_STATUSES: TaskStatus[] = [...REOPENABLE, 'awaiting_approval'];
 
 interface LeaseRow { owner: string | null; token: number; until: number }
 
@@ -15,11 +17,12 @@ export class MemoryStore implements Store {
   private tasks = new Map<string, Task>();
   private idem = new Map<string, { taskId: string; fingerprint: string | null }>();
   private subtasks = new Map<string, Subtask>();
-  private steps = new Map<string, unknown>();
+  private steps = new Map<string, { value: unknown; at: number }>();
   private approvals = new Map<string, Approval>();
   private leases = new Map<string, LeaseRow>();
   private toolCalls = new Map<string, ToolCall>();
   private outbox = new Map<string, OutboxEvent>();
+  private reservations = new Map<string, { taskId: string; amountUsd: number; at: number }>();
   private usage: Usage[] = [];
   private snapshots: Snapshot[] = [];
   private inbox: InboxEntry[] = [];
@@ -133,13 +136,13 @@ export class MemoryStore implements Store {
 
   async getStep(taskId: string, key: string) {
     const k = `${taskId}:${key}`;
-    return this.steps.has(k) ? { value: clone(this.steps.get(k)) } : null;
+    return this.steps.has(k) ? { value: clone(this.steps.get(k)!.value) } : null;
   }
 
   async putStep(taskId: string, key: string, value: unknown) {
     const k = `${taskId}:${key}`;
-    if (!this.steps.has(k)) this.steps.set(k, clone(value));
-    return clone(this.steps.get(k));
+    if (!this.steps.has(k)) this.steps.set(k, { value: clone(value ?? null), at: Date.now() });
+    return clone(this.steps.get(k)!.value);
   }
 
   async upsertApproval(a: Approval) {
@@ -224,7 +227,34 @@ export class MemoryStore implements Store {
     return countBy([...this.outbox.values()].map((e) => e.status));
   }
 
-  async recordUsage(u: Usage) {
+  private reservedFor(taskId: string) {
+    let sum = 0;
+    for (const r of this.reservations.values()) if (r.taskId === taskId) sum += r.amountUsd;
+    return round6(sum);
+  }
+
+  async reserveBudget(id: string, taskId: string, amountUsd: number): Promise<BudgetReservation | null> {
+    const t = this.tasks.get(taskId);
+    if (!t) return null;
+    const reservedUsd = this.reservedFor(taskId);
+    const reserved = round6(t.spentUsd + reservedUsd + amountUsd) <= t.budgetUsd;
+    if (reserved) this.reservations.set(id, { taskId, amountUsd: round6(amountUsd), at: Date.now() });
+    return { reserved, spentUsd: t.spentUsd, reservedUsd: reserved ? round6(reservedUsd + amountUsd) : reservedUsd, budgetUsd: t.budgetUsd };
+  }
+
+  async releaseBudget(id: string) {
+    this.reservations.delete(id);
+  }
+
+  async releaseTaskReservations(taskId: string, olderThanMs: number) {
+    let n = 0;
+    const cutoff = Date.now() - olderThanMs;
+    for (const [id, r] of this.reservations) if (r.taskId === taskId && r.at <= cutoff && this.reservations.delete(id)) n++;
+    return n;
+  }
+
+  async recordUsage(u: Usage, reservationId: string | null = null) {
+    if (reservationId) this.reservations.delete(reservationId);
     this.usage.push(clone(u));
     const t = this.tasks.get(u.taskId);
     if (!t) return u.costUsd;
@@ -234,6 +264,74 @@ export class MemoryStore implements Store {
 
   async listUsage(taskId?: string) {
     return this.usage.filter((u) => !taskId || u.taskId === taskId).map(clone);
+  }
+
+  async listUsagePage(limit: number, after: { createdAt: string; id: string } | null = null) {
+    return [...this.usage]
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id))
+      .filter((u) => !after || u.createdAt > after.createdAt || (u.createdAt === after.createdAt && u.id > after.id))
+      .slice(0, limit).map(clone);
+  }
+
+  async summarizeUsage(): Promise<UsageSummary> {
+    const group = <K extends string>(field: K, key: (u: Usage) => string) => {
+      const map = new Map<string, UsageBucket>();
+      for (const u of this.usage) {
+        const b = map.get(key(u)) ?? { tokens: 0, costUsd: 0, calls: 0 };
+        b.tokens += u.promptTokens + u.completionTokens;
+        b.costUsd = round6(b.costUsd + u.costUsd);
+        b.calls++;
+        map.set(key(u), b);
+      }
+      return [...map.entries()].sort((a, b) => b[1].costUsd - a[1].costUsd || a[0].localeCompare(b[0]))
+        .map(([k, b]) => ({ [field]: k, ...b }) as UsageBucket & Record<K, string>);
+    };
+    return {
+      totals: {
+        tokens: this.usage.reduce((s, u) => s + u.promptTokens + u.completionTokens, 0),
+        costUsd: round6(this.usage.reduce((s, u) => s + u.costUsd, 0)),
+        calls: this.usage.length,
+        cacheHits: this.usage.filter((u) => u.cached).length,
+        savedUsd: round6(this.usage.reduce((s, u) => s + u.savedUsd, 0)),
+      },
+      byModel: group('model', (u) => u.model),
+      byAgent: group('agent', (u) => u.agent),
+    };
+  }
+
+  async listTaskCosts(limit: number, offset: number): Promise<{ items: TaskCost[]; total: number }> {
+    const tokens = new Map<string, number>();
+    for (const u of this.usage) tokens.set(u.taskId, (tokens.get(u.taskId) ?? 0) + u.promptTokens + u.completionTokens);
+    const page = (await this.listTasks(this.tasks.size)).slice(offset, offset + limit);
+    return {
+      items: page.map((t) => ({ taskId: t.id, title: t.title, status: t.status, costUsd: t.spentUsd, budgetUsd: t.budgetUsd, tokens: tokens.get(t.id) ?? 0 })),
+      total: this.tasks.size,
+    };
+  }
+
+  async pruneBefore(before: string): Promise<PruneResult> {
+    const cutoff = Date.parse(before);
+    const retained = (taskId: string) => {
+      const t = this.tasks.get(taskId);
+      return !!t && RETAINED_STATUSES.includes(t.status);
+    };
+    const inboxBefore = this.inbox.length;
+    this.inbox = this.inbox.filter((e) => Date.parse(e.receivedAt) >= cutoff);
+    let toolCalls = 0;
+    for (const [key, c] of this.toolCalls) {
+      if (c.status !== 'started' && Date.parse(c.createdAt) < cutoff && !retained(c.taskId)) {
+        this.toolCalls.delete(key);
+        toolCalls++;
+      }
+    }
+    let stepJournal = 0;
+    for (const [k, step] of this.steps) {
+      if (step.at < cutoff && !retained(k.slice(0, k.indexOf(':')))) {
+        this.steps.delete(k);
+        stepJournal++;
+      }
+    }
+    return { webhookInbox: inboxBefore - this.inbox.length, toolCalls, stepJournal };
   }
 
   async addSnapshot(s: Snapshot) {

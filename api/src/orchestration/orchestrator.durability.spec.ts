@@ -1,4 +1,4 @@
-import { sleep, stableId } from '../common/util';
+import { newId, sleep, stableId } from '../common/util';
 import { LlmProvider, MockProvider } from '../gateway/llm-provider';
 import { ModelSpec } from '../gateway/model-catalog';
 import { MemoryStore } from '../persistence/memory.store';
@@ -247,5 +247,20 @@ describe('Orchestrator: approval decided while the paused run still holds the le
     expect(await h.orchestrator.run(task.id)).toBe('paused');
     expect(await h.orchestrator.resumeActive()).toBe(0);
     expect(h.orchestrator.isRunning(task.id)).toBe(false);
+  });
+
+  it('a run releases only reservations older than the task timeout: a younger one may still be in flight', async () => {
+    const h = orchestratorHarness();
+    const task = await h.createTask();
+    const release = jest.spyOn(h.store, 'releaseTaskReservations');
+    expect(await h.store.reserveBudget(newId(), task.id, task.budgetUsd)).toMatchObject({ reserved: true });
+    process.env.TASK_TIMEOUT_MS = '60000';
+    try {
+      // The young reservation is kept, so the run has no budget left.
+      expect(await h.orchestrator.run(task.id)).toBe('budget_exceeded');
+    } finally {
+      delete process.env.TASK_TIMEOUT_MS;
+    }
+    expect(release).toHaveBeenCalledWith(task.id, 60_000);
   });
 });

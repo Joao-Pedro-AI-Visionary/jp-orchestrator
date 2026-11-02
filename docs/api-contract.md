@@ -1,4 +1,8 @@
-# Contrato da API (v0.5.0)
+# Contrato da API (v0.6.0)
+
+Documento OpenAPI gerado dos controllers: Swagger UI em `GET /docs`, JSON em `GET /docs/openapi.json`
+(YAML em `/docs/openapi.yaml`). Ligado por padrão fora de produção; `OPENAPI=on|off` força. Este arquivo
+continua sendo o contrato com papéis, tipos de resposta, eventos e garantias.
 
 Base: `http://localhost:3001`. JSON em tudo. CORS só para as origens de `CORS_ORIGINS`
 (padrão fora de produção: `http://localhost:3000`; em produção, nenhuma).
@@ -22,6 +26,9 @@ Chave em `X-API-Key: <chave>` ou `Authorization: Bearer <chave>`. As chaves vêm
 ## Tipos
 
 ```ts
+type DependencyState = 'up' | 'down' | 'memory';
+// 'in-memory': nem Postgres nem Redis configurados (demo, estado some no restart); 'mixed': só um deles.
+type RunMode = 'in-memory' | 'persistent' | 'mixed';
 type TaskStatus = 'queued' | 'planning' | 'running' | 'awaiting_approval' | 'merging'
   | 'completed' | 'failed' | 'rejected' | 'budget_exceeded';
 type SubtaskStatus = 'pending' | 'running' | 'done' | 'failed' | 'cancelled';
@@ -52,8 +59,8 @@ type DependencyState = 'up' | 'down' | 'memory'; // memory: não configurado, a 
 
 | Método | Rota | Papel | Corpo / Header | Resposta |
 |---|---|---|---|---|
-| GET | /health | público | | Liveness, sempre 200: `{ ok: true, postgres: bool, redis: bool, services: { postgres: DependencyState, redis: DependencyState }, store: 'postgres' \| 'memory' }` |
-| GET | /health/ready | público | | Readiness: 200 `{ ready: true, services }`; **503** `{ ready: false, services }` quando um Postgres ou Redis configurado não responde (2 s) |
+| GET | /health | público | | Liveness, sempre 200: `{ ok: true, postgres: bool, redis: bool, services: { postgres: DependencyState, redis: DependencyState }, store: 'postgres' \| 'memory', mode: RunMode, version: string }` |
+| GET | /health/ready | público | | Readiness: 200 `{ ready: true, services, mode }`; **503** `{ ready: false, services, mode }` quando um Postgres ou Redis configurado não responde (2 s) |
 | GET | /metrics | viewer | | Prometheus (texto 0.0.4), ver "Métricas" abaixo |
 | POST | /tasks | operator, limitada | `{ title: string, description: string, budgetUsd?: number \| string = 0.05, requiresApproval?: boolean \| 'true' \| 'false' = false }`, header opcional `Idempotency-Key` (até 200 caracteres ASCII visíveis) | 201 `Task`. Repetição com a mesma chave e o mesmo corpo (normalizado: `"0,05"` = `0.05`, texto aparado): 200 + header `Idempotent-Replay: true`, mesma Task. Mesma chave com **outro corpo: 422**, nada é criado |
 | GET | /tasks | viewer | | `Task[]` (mais recentes primeiro, até 50) |
@@ -61,7 +68,7 @@ type DependencyState = 'up' | 'down' | 'memory'; // memory: não configurado, a 
 | POST | /tasks/:id/approve | approver, limitada | `{ note?: string }` (até 2000 caracteres) | `Task` (retoma o loop durável). Grava `decidedBy`. 409 se a tarefa não aguarda aprovação |
 | POST | /tasks/:id/reject | approver, limitada | `{ note?: string }` (até 2000 caracteres) | `Task` (status `rejected`). Grava `decidedBy` |
 | POST | /tasks/:id/resume | operator, limitada | | `Task` (retoma tarefa `failed` ou ativa sem dono a partir do journal). 409 se outra execução tem o lease da tarefa (inclusive uma execução cancelada por timeout que ainda está parando) ou se o status não permite retomar |
-| GET | /billing/summary | viewer | | `{ totals: {tokens, costUsd, calls, cacheHits, savedUsd}, byModel: {model,tokens,costUsd,calls}[], byAgent: {agent,tokens,costUsd,calls}[], byTask: {taskId,title,status,costUsd,budgetUsd,tokens}[] }` |
+| GET | /billing/summary | viewer | `?limit=` (1..200, padrão 50), `?offset=` (padrão 0) | `{ totals: {tokens, costUsd, calls, cacheHits, savedUsd}, byModel: {model,tokens,costUsd,calls}[], byAgent: {agent,tokens,costUsd,calls}[], byTask: {taskId,title,status,costUsd,budgetUsd,tokens}[], page: {limit, offset, total} }`. Agregado no banco (`GROUP BY`); `totals`, `byModel` e `byAgent` cobrem todo o uso, `byTask` é uma página (mais recentes primeiro) e `page.total` é o total de tarefas |
 | GET | /billing/report.csv | viewer (chave também na URL/cookie) | | `text/csv` |
 | GET | /gateway/models | viewer | | `{ id, provider, tier: 'cheap'\|'balanced'\|'premium', inputPer1k, outputPer1k, healthy }[]` |
 | POST | /gateway/models/:id/toggle | admin, limitada | | modelo atualizado (simula queda, força fallback) |
@@ -96,6 +103,22 @@ Eventos assinados do outbox: `task.completed` (com `decidedBy` quando a tarefa e
 | `jpo_tool_call_duration_seconds` | histogram | `tool` |
 | `jpo_http_requests_total` | counter | `method`, `route`, `status` |
 | `jpo_rate_limited_total` | counter | |
+
+## Orçamento
+
+Cada chamada ao modelo **reserva** antes o pior custo do modelo escolhido (prompt + `maxOutputTokens`), de forma
+atômica: só reserva se `spentUsd + reservado + estimativa <= budgetUsd`. Depois da chamada o custo real é gravado e a
+reserva liquidada na mesma transação; se a chamada falha, a reserva é devolvida. Num fallback cada modelo reserva o
+seu pior custo (um modelo de fallback mais caro que não cabe no orçamento recusa antes de chamar). Chamadas
+concorrentes da mesma tarefa nunca gastam juntas além do orçamento. Reservas deixadas por um crash, mais antigas que
+`TASK_TIMEOUT_MS`, são liberadas quando a próxima execução toma o lease da tarefa.
+
+## Retenção
+
+A cada `RETENTION_INTERVAL_MS` (1 h) a API apaga linhas de `webhook_inbox`, `tool_calls` finalizadas e `step_journal`
+mais antigas que `RETENTION_MS` (7 dias). Nunca apaga linhas de tarefa que ainda pode rodar ou ser retomada (ativa,
+aguardando aprovação ou `failed`) nem `tool_calls` em `started`. `RETENTION_MS` menor que `IDEMPOTENCY_KEY_TTL_MS`
+impede o boot (a chave de dedupe sumiria dentro do prazo de reentrega). `RETENTION=off` desliga.
 
 Counters e histogramas são por réplica e zeram no restart (o Prometheus soma entre alvos).
 

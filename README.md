@@ -121,8 +121,9 @@ heartbeat (até `TASK_LEASE_MS` / 3). Deploy a partir da 0.3.x: por substituiç�
 
 - **Webhooks (outbox → receptor): at-least-once + dedupe no receptor.** O evento nasce na mesma transação do
   estado que o gerou. O `OutboxRelay` reivindica o evento com um lease de 30 s (`OUTBOX_CLAIM_LEASE_MS`, `FOR UPDATE SKIP LOCKED`) e só
-  marca `delivered` depois do 2xx. Se o processo morrer entre o 2xx e essa marca, ou a entrega passar de 30 s, o
-  evento é reenviado. Todo envio do mesmo evento leva os mesmos `X-JP-Event-Id` e `Idempotency-Key` (= id do
+  marca `delivered` depois do 2xx. Se o processo morrer entre o 2xx e essa marca, o evento é reenviado quando o
+  lease vence. O lote reivindicado é enviado em paralelo, cada envio limitado por `OUTBOX_TIMEOUT_MS` (o boot exige
+  lease de pelo menos 2× o timeout), então o lease não vence no meio do lote. Todo envio do mesmo evento leva os mesmos `X-JP-Event-Id` e `Idempotency-Key` (= id do
   evento), com assinatura nova. O receptor deduplica por esse id: `webhook_inbox.event_id` é `UNIQUE` e o insert
   usa `ON CONFLICT DO NOTHING`; a repetição responde 200 com `duplicate: true`. Só deduplica evento com assinatura
   válida e cujo header bate com o `id` assinado no corpo, para uma requisição forjada não "ocupar" o id de um evento real.
@@ -181,14 +182,18 @@ heartbeat (até `TASK_LEASE_MS` / 3). Deploy a partir da 0.3.x: por substituiç�
 ### Observabilidade
 
 - **Logs JSON**, um objeto por linha (`ts`, `level`, `context`, `msg`), com `taskId` em tudo o que a execução de uma
-  tarefa escreve (AsyncLocalStorage), `requestId` (`X-Request-Id`) e `principal` nas linhas de acesso HTTP. A query
+  tarefa escreve e `subtaskId` no que cada subagente escreve (AsyncLocalStorage), `requestId` (`X-Request-Id`) e `principal` nas linhas de acesso HTTP. A query
   string não vai para o log, então `?api_key=` não vaza. `LOG_FORMAT=text` volta ao formato colorido do Nest.
 - **`GET /metrics`** (Prometheus, chave `viewer`): tarefas por status, eventos do outbox por status e `jpo_outbox_dead`,
   chamadas, latência, cache e fallbacks do gateway, chamadas de ferramenta por resultado e requisições HTTP. Lista
   completa em `docs/api-contract.md`. No Prometheus: `authorization: { credentials: <chave viewer> }` no scrape job.
 - **`GET /health`** é liveness (sempre 200). **`GET /health/ready`** devolve 503 enquanto um Postgres ou Redis
   configurado não responde; o healthcheck do compose usa o readiness. Em modo memória os dois aparecem como `memory`
-  e o dashboard mostra "em memória" em cinza, não como falha.
+  e o dashboard mostra "em memória" em cinza, não como falha; `mode` (`in-memory`, `persistent`, `mixed`) resume.
+- **OpenAPI** gerado dos controllers: Swagger UI em `/docs`, JSON em `/docs/openapi.json` (padrão ligado fora de
+  produção; `OPENAPI=on|off`).
+- **Retenção:** `RETENTION_MS` (7 dias, nunca abaixo de `IDEMPOTENCY_KEY_TTL_MS`) e `RETENTION_INTERVAL_MS` (1 h)
+  limpam `webhook_inbox`, `tool_calls` finalizadas e `step_journal`; `RETENTION=off` desliga.
 
 ### Como rodar
 
@@ -275,7 +280,8 @@ This version ships a deterministic `MockProvider`; real providers plug in as ano
 
 - **Webhooks (outbox → receiver): at-least-once delivery + receiver dedupe.** Events are written in the same
   transaction as the state change. The relay claims an event with a 30s lease (`OUTBOX_CLAIM_LEASE_MS`) and marks it `delivered` only after a
-  2xx, so a crash between the 2xx and the mark (or a delivery slower than the lease) resends it. Every send of one
+  2xx, so a crash between the 2xx and the mark resends it once the lease expires. A claimed batch is sent in parallel,
+  each send bounded by `OUTBOX_TIMEOUT_MS` (boot requires the lease to be at least 2x the timeout), so the lease never expires mid-batch. Every send of one
   event carries the same `X-JP-Event-Id` and `Idempotency-Key` (the event id). Receivers must dedupe on it; the demo
   receiver does so with a `UNIQUE` `webhook_inbox.event_id` and `ON CONFLICT DO NOTHING`, answering 200 with
   `duplicate: true` on a replay (only for verified events whose header matches the signed body id).

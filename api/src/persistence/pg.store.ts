@@ -4,7 +4,7 @@ import { Pool, PoolClient } from 'pg';
 import {
   Approval, InboxEntry, OutboxEvent, Snapshot, Subtask, Task, TaskLease, TERMINAL_STATUSES, ToolCall, Usage,
 } from '../common/types';
-import { Store, ToolClaim } from './store.port';
+import { BudgetReservation, PruneResult, Store, TaskCost, ToolClaim, UsageSummary } from './store.port';
 
 type Row = Record<string, unknown>;
 const iso = (v: unknown): string | null => (v ? new Date(v as string).toISOString() : null);
@@ -12,6 +12,8 @@ const num = (v: unknown): number => Number(v ?? 0);
 const snake = (k: string): string => k.replace(/[A-Z]/g, (c) => `_${c.toLowerCase()}`);
 const JSON_COLS = new Set(['result', 'payload', 'content', 'args', 'value']);
 const REOPENABLE = ['failed', 'queued', 'planning', 'running', 'merging'];
+/** Same rule as MemoryStore: a task that may still run or be resumed keeps its journal and tool calls. */
+const RETAINED = [...REOPENABLE, 'awaiting_approval'];
 const ms = (n: number) => String(Math.max(0, Math.round(n)));
 
 const toTask = (r: Row): Task => ({
@@ -423,8 +425,51 @@ export class PgStore implements Store {
     return countRows((await this.pool.query('SELECT status, count(*) AS n FROM outbox GROUP BY status')).rows);
   }
 
-  recordUsage(u: Usage) {
+  async reserveBudget(id: string, taskId: string, amountUsd: number): Promise<BudgetReservation | null> {
     return this.tx(async (c) => {
+      // FOR UPDATE serializes concurrent reservations of one task: the check and the increment are one step.
+      const cur = await c.query('SELECT spent_usd, reserved_usd, budget_usd FROM tasks WHERE id = $1 FOR UPDATE', [taskId]);
+      const row = cur.rows[0];
+      if (!row) return null;
+      const r = await c.query(
+        `UPDATE tasks SET reserved_usd = reserved_usd + $2
+         WHERE id = $1 AND spent_usd + reserved_usd + $2 <= budget_usd RETURNING spent_usd, reserved_usd, budget_usd`,
+        [taskId, amountUsd],
+      );
+      if (!r.rows[0]) return { reserved: false, spentUsd: num(row.spent_usd), reservedUsd: num(row.reserved_usd), budgetUsd: num(row.budget_usd) };
+      await c.query('INSERT INTO budget_reservations (id, task_id, amount_usd) VALUES ($1,$2,$3)', [id, taskId, amountUsd]);
+      return { reserved: true, spentUsd: num(r.rows[0].spent_usd), reservedUsd: num(r.rows[0].reserved_usd), budgetUsd: num(r.rows[0].budget_usd) };
+    });
+  }
+
+  /** Removes the reservation and gives its amount back to the task, inside the caller's transaction. */
+  private async dropReservation(c: PoolClient, id: string) {
+    const r = await c.query('DELETE FROM budget_reservations WHERE id = $1 RETURNING task_id, amount_usd', [id]);
+    if (r.rows[0]) {
+      await c.query('UPDATE tasks SET reserved_usd = GREATEST(reserved_usd - $2, 0) WHERE id = $1', [r.rows[0].task_id, r.rows[0].amount_usd]);
+    }
+  }
+
+  async releaseBudget(id: string) {
+    await this.tx((c) => this.dropReservation(c, id));
+  }
+
+  releaseTaskReservations(taskId: string, olderThanMs: number) {
+    return this.tx(async (c) => {
+      const r = await c.query(
+        `DELETE FROM budget_reservations WHERE task_id = $1 AND created_at <= now() - ($2 || ' milliseconds')::interval
+         RETURNING amount_usd`,
+        [taskId, ms(olderThanMs)],
+      );
+      const freed = r.rows.reduce((sum, row) => sum + num(row.amount_usd), 0);
+      if (freed > 0) await c.query('UPDATE tasks SET reserved_usd = GREATEST(reserved_usd - $2, 0) WHERE id = $1', [taskId, freed]);
+      return r.rowCount ?? 0;
+    });
+  }
+
+  recordUsage(u: Usage, reservationId: string | null = null) {
+    return this.tx(async (c) => {
+      if (reservationId) await this.dropReservation(c, reservationId);
       await c.query(
         `INSERT INTO usage_records (id, task_id, subtask_id, agent, model, prompt_tokens, completion_tokens, cost_usd, saved_usd, cached, created_at)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
@@ -443,6 +488,72 @@ export class PgStore implements Store {
       ? await this.pool.query('SELECT * FROM usage_records WHERE task_id = $1 ORDER BY created_at', [taskId])
       : await this.pool.query('SELECT * FROM usage_records ORDER BY created_at');
     return r.rows.map(toUsage);
+  }
+
+  async listUsagePage(limit: number, after: { createdAt: string; id: string } | null = null) {
+    const r = after
+      // The cursor comes back as a millisecond ISO string: compare at that precision, or a row
+      // with microseconds would sort after its own cursor and be read again on every page.
+      ? await this.pool.query(
+        `SELECT * FROM usage_records WHERE (date_trunc('milliseconds', created_at), id) > ($2::timestamptz, $3::uuid)
+         ORDER BY date_trunc('milliseconds', created_at), id LIMIT $1`, [limit, after.createdAt, after.id])
+      : await this.pool.query(`SELECT * FROM usage_records ORDER BY date_trunc('milliseconds', created_at), id LIMIT $1`, [limit]);
+    return r.rows.map(toUsage);
+  }
+
+  async summarizeUsage(): Promise<UsageSummary> {
+    const bucket = (r: Row) => ({ tokens: num(r.tokens), costUsd: num(r.cost_usd), calls: num(r.calls) });
+    const agg = 'COALESCE(sum(prompt_tokens + completion_tokens), 0) AS tokens, COALESCE(sum(cost_usd), 0) AS cost_usd, count(*) AS calls';
+    const [totals, byModel, byAgent] = await Promise.all([
+      this.pool.query(`SELECT ${agg}, count(*) FILTER (WHERE cached) AS cache_hits, COALESCE(sum(saved_usd), 0) AS saved_usd FROM usage_records`),
+      this.pool.query(`SELECT model, ${agg} FROM usage_records GROUP BY model ORDER BY cost_usd DESC, model`),
+      this.pool.query(`SELECT agent, ${agg} FROM usage_records GROUP BY agent ORDER BY cost_usd DESC, agent`),
+    ]);
+    const t = totals.rows[0];
+    return {
+      totals: { ...bucket(t), cacheHits: num(t.cache_hits), savedUsd: num(t.saved_usd) },
+      byModel: byModel.rows.map((r) => ({ model: r.model as string, ...bucket(r) })),
+      byAgent: byAgent.rows.map((r) => ({ agent: r.agent as string, ...bucket(r) })),
+    };
+  }
+
+  async listTaskCosts(limit: number, offset: number): Promise<{ items: TaskCost[]; total: number }> {
+    const [page, total] = await Promise.all([
+      this.pool.query(
+        `WITH t AS (SELECT * FROM tasks ORDER BY created_at DESC, id LIMIT $1 OFFSET $2)
+         SELECT t.id, t.title, t.status, t.spent_usd, t.budget_usd, COALESCE(u.tokens, 0) AS tokens
+         FROM t
+         LEFT JOIN (SELECT task_id, sum(prompt_tokens + completion_tokens) AS tokens FROM usage_records
+                    WHERE task_id IN (SELECT id FROM t) GROUP BY task_id) u ON u.task_id = t.id
+         ORDER BY t.created_at DESC, t.id`,
+        [limit, offset],
+      ),
+      this.pool.query('SELECT count(*) AS n FROM tasks'),
+    ]);
+    return {
+      items: page.rows.map((r) => ({
+        taskId: r.id as string, title: r.title as string, status: r.status as string,
+        costUsd: num(r.spent_usd), budgetUsd: num(r.budget_usd), tokens: num(r.tokens),
+      })),
+      total: num(total.rows[0].n),
+    };
+  }
+
+  pruneBefore(before: string): Promise<PruneResult> {
+    return this.tx(async (c) => {
+      const inbox = await c.query('DELETE FROM webhook_inbox WHERE received_at < $1', [before]);
+      const tools = await c.query(
+        `DELETE FROM tool_calls tc WHERE tc.status <> 'started' AND tc.created_at < $1
+           AND NOT EXISTS (SELECT 1 FROM tasks t WHERE t.id = tc.task_id AND t.status = ANY($2::text[]))`,
+        [before, RETAINED],
+      );
+      const journal = await c.query(
+        `DELETE FROM step_journal j WHERE j.created_at < $1
+           AND NOT EXISTS (SELECT 1 FROM tasks t WHERE t.id = j.task_id AND t.status = ANY($2::text[]))`,
+        [before, RETAINED],
+      );
+      return { webhookInbox: inbox.rowCount ?? 0, toolCalls: tools.rowCount ?? 0, stepJournal: journal.rowCount ?? 0 };
+    });
   }
 
   async addSnapshot(s: Snapshot) {

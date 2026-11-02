@@ -28,7 +28,7 @@ function Indicator({ name, state, testId, icon }: { name: string; state: Indicat
       data-testid={testId}
       data-state={state}
       data-ok={state === "unknown" ? "unknown" : String(state === "up")}
-      className="flex min-h-12 items-center gap-2 rounded-xl border border-white/10 bg-white/[0.03] px-3 text-sm text-neutral-200"
+      className="flex min-h-11 items-center gap-2 rounded-xl border border-white/10 bg-white/[0.03] px-2.5 text-sm text-neutral-200 sm:min-h-12 sm:px-3"
     >
       {icon}
       <span>{name}</span>
@@ -40,25 +40,25 @@ function Indicator({ name, state, testId, icon }: { name: string; state: Indicat
 
 export function Header({ d, onNewTask }: { d: Dashboard; onNewTask: () => void }) {
   return (
-    <header className="flex flex-wrap items-center justify-between gap-4" data-testid="app-header">
+    <header className="flex flex-wrap items-center justify-between gap-3 sm:gap-4" data-testid="app-header">
       <div className="flex items-center gap-3">
-        <Image src="/jpdev-logo.png" alt="" width={48} height={57} priority className="h-14 w-auto" data-testid="brand-logo" />
+        <Image src="/jpdev-logo.png" alt="" width={48} height={57} priority className="h-10 w-auto sm:h-14" data-testid="brand-logo" />
         <div>
-          <h1 className="font-heading text-2xl font-bold leading-none tracking-tight text-white" data-testid="brand">
+          <h1 className="font-heading text-xl font-bold sm:text-2xl leading-none tracking-tight text-white" data-testid="brand">
             Jp<span className="text-brand">Dev</span>
             <span className="sr-only"> JP Orchestrator</span>
           </h1>
-          <p className="mt-1 text-sm text-neutral-400">JP Orchestrator</p>
+          <p className="mt-1 hidden text-sm text-neutral-400 sm:block">JP Orchestrator</p>
         </div>
       </div>
-      <div className="flex flex-wrap items-center gap-3">
-        <ul aria-label="Saúde dos serviços" className="flex flex-wrap items-center gap-2" data-testid="health">
+      <div className="flex flex-wrap items-center gap-2 sm:gap-3">
+        <ul aria-label="Saúde dos serviços" className="flex flex-wrap items-center gap-1.5 sm:gap-2" data-testid="health">
           <Indicator name="Postgres" state={stateOf(d, "postgres")} testId="health-postgres" icon={<Database className="size-4 text-neutral-400" aria-hidden="true" />} />
           <Indicator name="Redis" state={stateOf(d, "redis")} testId="health-redis" icon={<Server className="size-4 text-neutral-400" aria-hidden="true" />} />
           <li
             data-testid="live-indicator"
             data-live={String(d.live)}
-            className="flex min-h-12 items-center gap-2 rounded-xl border border-white/10 bg-white/[0.03] px-3 text-sm text-neutral-200"
+            className="flex min-h-11 items-center gap-2 rounded-xl border border-white/10 bg-white/[0.03] px-2.5 text-sm text-neutral-200 sm:min-h-12 sm:px-3"
           >
             {d.live ? <Radio className="size-4 text-ok" aria-hidden="true" /> : <Activity className="size-4 text-neutral-400" aria-hidden="true" />}
             {d.live ? "Ao vivo" : "Reconectando"}

@@ -4,6 +4,48 @@ Formato baseado em Keep a Changelog. Versionamento semântico.
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-11-01
+
+### Corrigido
+- **Lease do outbox nunca vence no meio do lote.** O relay enviava o lote (até 20 eventos) um por um com um único
+  lease de 30 s; um lote lento passava do lease e outra réplica reenviava eventos cujo primeiro envio ainda estava em
+  curso. Agora o lote (`OUTBOX_BATCH`, 20) é enviado em paralelo, cada envio limitado por `OUTBOX_TIMEOUT_MS`, e o
+  boot exige `OUTBOX_CLAIM_LEASE_MS >= 2 × OUTBOX_TIMEOUT_MS`.
+- **Reserva atômica de orçamento.** O guard antigo lia `spentUsd` e comparava, sem reservar: chamadas concorrentes da
+  mesma tarefa passavam juntas e estouravam o orçamento, e um fallback para modelo mais caro não era checado. Agora
+  cada chamada reserva o pior custo do modelo (`tasks.reserved_usd` + `budget_reservations`, migração `0005`) só se
+  `gasto + reservado + estimativa <= orçamento`; o custo real liquida a reserva na mesma transação do registro de uso
+  e a falha a devolve. Cada modelo do fallback reserva o seu. Reservas órfãs (crash) mais antigas que `TASK_TIMEOUT_MS`
+  são liberadas quando a próxima execução toma o lease da tarefa (as mais novas podem ser de uma chamada ainda viva).
+
+### Adicionado
+- **Retenção** (`RETENTION_MS`, 7 dias; `RETENTION_INTERVAL_MS`, 1 h; `RETENTION=off`): apaga `webhook_inbox`,
+  `tool_calls` finalizadas e `step_journal` antigos, preservando tarefas que ainda podem rodar ou ser retomadas
+  (ativas, aguardando aprovação, `failed`) e chamadas `started`. O boot recusa `RETENTION_MS` abaixo de
+  `IDEMPOTENCY_KEY_TTL_MS`.
+- **OpenAPI** gerado dos controllers (`@nestjs/swagger` 11.4.7): Swagger UI em `/docs`, JSON em `/docs/openapi.json`.
+  Ligado fora de produção por padrão; `OPENAPI=on|off`.
+- `subtaskId` nos logs JSON de tudo o que um subagente escreve (junto do `taskId`).
+- `GET /health` e `/health/ready` informam `mode` (`in-memory`, `persistent`, `mixed`); `/health` também `version`.
+
+### Alterado
+- **Billing agregado no banco:** `GET /billing/summary` usa `GROUP BY` em vez de carregar todo o `usage_records`
+  na memória, e `byTask` é paginado (`?limit=` 1..200, padrão 50; `?offset=`) com `page: { limit, offset, total }`.
+  Antes `byTask` tinha teto fixo de 200 tarefas. O CSV lê o ledger em páginas de 1000 (keyset).
+- Dashboard: cabeçalho e KPIs mais compactos no celular (alvos de toque continuam com 44 px); billing mostra
+  "N mais recentes de T" quando há mais tarefas que a página.
+
+### Já presentes (conferidos, sem mudança)
+- Decisão de aprovação atômica (`UPDATE ... WHERE status = 'pending'`, 409 para o perdedor) e passo `plan`
+  determinístico (`stableId`), ambos desde a 0.4.0, com testes de concorrência e de crash.
+- Estado "em memória" neutro no cabeçalho, `shrink-0` no ícone do agente e rolagem até o detalhe no celular (0.5.0).
+
+### Atualização
+- Migração `0005` aplicada no boot (colunas e índices novos, sem reescrita de dados).
+- Configurações com `OUTBOX_CLAIM_LEASE_MS < 2 × OUTBOX_TIMEOUT_MS` ou `RETENTION_MS < IDEMPOTENCY_KEY_TTL_MS` passam a
+  falhar no boot.
+- Clientes de `/billing/summary` que liam mais de 50 tarefas em `byTask` precisam paginar.
+
 ## [0.5.0] - 2026-11-01
 
 ### Segurança

@@ -1,9 +1,16 @@
+import { AgentResult, AgentStrategy } from '../agents/agent-strategy';
+import { API_VERSION, nowIso } from '../common/util';
 import { HealthController } from '../health/health.controller';
+import { loops } from '../orchestration/loops';
+import { StrategyRegistry } from '../strategy/strategy-registry';
+import { Dispatcher } from '../orchestration/dispatcher';
+import { orchestratorHarness } from '../test-utils/harness';
 import { MemoryStore } from '../persistence/memory.store';
 import { Store } from '../persistence/store.port';
 import { JsonLogger } from './json-logger';
-import { withLogContext } from './log-context';
+import { currentLogContext, withLogContext } from './log-context';
 import { MetricsRegistry } from './metrics';
+import { openApiEnabled } from './openapi';
 
 describe('MetricsRegistry', () => {
   it('renders counters, histograms and gauges in the Prometheus text format', () => {
@@ -48,6 +55,27 @@ describe('JsonLogger', () => {
     expect(lines[1].taskId).toBeUndefined();
   });
 
+  it('lines written by a subagent carry its subtaskId next to the taskId', async () => {
+    const { lines, logger } = capture();
+    const h = orchestratorHarness();
+    const task = await h.createTask();
+    const probe: AgentStrategy = {
+      key: 'coder', tier: 'cheap',
+      run: async (): Promise<AgentResult> => {
+        await Promise.resolve();
+        logger.log('gerando código', 'Coder');
+        return { output: 'ok', model: 'm', artifacts: [] };
+      },
+    };
+    const dispatcher = new Dispatcher(h.store, new StrategyRegistry('agent', [probe]), h.gateway, h.tools, h.memory, h.bus, loops().dispatch);
+    const subtasks = ['s-a', 's-b'].map((id, i) => ({ id, taskId: task.id, agent: 'coder' as const, title: id, status: 'pending' as const,
+      model: null, output: null, attempt: 1, position: i, startedAt: null, finishedAt: nowIso() }));
+    await h.store.saveSubtasks(subtasks);
+    await withLogContext({ taskId: task.id }, () => dispatcher.dispatch(task, subtasks, { attempt: 1, feedback: null }));
+    expect(lines.map((l) => [l.taskId, l.subtaskId]).sort()).toEqual([[task.id, 's-a'], [task.id, 's-b']]);
+    expect(currentLogContext().subtaskId).toBeUndefined();
+  });
+
   it('falls back to the task id in the message and keeps the stack of errors', () => {
     const { lines, logger } = capture();
     logger.error('Tarefa 0f8c2a9e-1b2c-4d5e-8f90-123456789abc: boom', 'Error: boom\n at x', 'Orchestrator');
@@ -73,9 +101,11 @@ describe('HealthController', () => {
   it('memory mode is ready and reported as memory, not as down', async () => {
     const h = new HealthController(new MemoryStore(), null);
     const r = res();
-    expect(await h.ready(r)).toEqual({ ready: true, services: { postgres: 'memory', redis: 'memory' } });
+    expect(await h.ready(r)).toEqual({ ready: true, services: { postgres: 'memory', redis: 'memory' }, mode: 'in-memory' });
     expect(r.code).toBe(200);
-    expect(await h.health()).toMatchObject({ ok: true, postgres: false, redis: false, services: { postgres: 'memory', redis: 'memory' }, store: 'memory' });
+    expect(await h.health()).toMatchObject({
+      ok: true, postgres: false, redis: false, services: { postgres: 'memory', redis: 'memory' }, store: 'memory', mode: 'in-memory', version: API_VERSION,
+    });
   });
 
   it('readiness answers 503 when a configured Postgres or Redis is down; liveness stays ok', async () => {
@@ -85,12 +115,21 @@ describe('HealthController', () => {
     ] as const) {
       const h = new HealthController(store, rd);
       const r = res();
-      expect(await h.ready(r)).toEqual({ ready: false, services: expected });
+      expect(await h.ready(r)).toEqual({ ready: false, services: expected, mode: rd ? 'persistent' : 'mixed' });
       expect(r.code).toBe(503);
       expect((await h.health()).ok).toBe(true);
     }
     const r = res();
-    expect(await new HealthController(pgUp, redis(true)).ready(r)).toEqual({ ready: true, services: { postgres: 'up', redis: 'up' } });
+    expect(await new HealthController(pgUp, redis(true)).ready(r)).toEqual({ ready: true, services: { postgres: 'up', redis: 'up' }, mode: 'persistent' });
     expect(r.code).toBe(200);
+  });
+});
+
+describe('openApiEnabled', () => {
+  it('is on outside production, off in production unless OPENAPI=on, and OPENAPI=off always wins', () => {
+    expect(openApiEnabled({})).toBe(true);
+    expect(openApiEnabled({ NODE_ENV: 'production' })).toBe(false);
+    expect(openApiEnabled({ NODE_ENV: 'production', OPENAPI: 'on' })).toBe(true);
+    expect(openApiEnabled({ OPENAPI: 'off' })).toBe(false);
   });
 });

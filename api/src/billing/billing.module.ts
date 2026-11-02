@@ -1,4 +1,4 @@
-import { Controller, Get, Header, Module } from '@nestjs/common';
+import { Controller, Get, Header, Module, Query } from '@nestjs/common';
 import { KeyInQuery } from '../auth/auth.decorators';
 import { BillingService } from './billing.service';
 
@@ -6,9 +6,10 @@ import { BillingService } from './billing.service';
 export class BillingController {
   constructor(private readonly billing: BillingService) {}
 
+  /** ?limit= (1..200, default 50) and ?offset= page byTask; totals, byModel and byAgent cover all usage. */
   @Get('summary')
-  summary() {
-    return this.billing.summary();
+  summary(@Query('limit') limit?: string, @Query('offset') offset?: string) {
+    return this.billing.summary(limit === undefined ? 50 : Number(limit), offset === undefined ? 0 : Number(offset));
   }
 
   /** Download link: the key may come as ?api_key= or the jp_api_key cookie. */

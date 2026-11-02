@@ -45,6 +45,11 @@ describe('retry horizon', () => {
     expect(() => assertRetryHorizon(cfg({ outboxMaxAgeMs: 86_400_000 }))).toThrow(/OUTBOX_MAX_AGE_MS \(86400000ms\)/);
   });
 
+  it('requires the claim lease to be at least twice one send: a parallel batch ends within OUTBOX_TIMEOUT_MS', () => {
+    expect(() => assertRetryHorizon(cfg({ outboxClaimLeaseMs: 9_999 }))).toThrow(/OUTBOX_CLAIM_LEASE_MS \(9999ms\) deve ser pelo menos 2x OUTBOX_TIMEOUT_MS/);
+    expect(() => assertRetryHorizon(cfg({ outboxClaimLeaseMs: 10_000 }))).not.toThrow();
+  });
+
   it('rejects non-positive or fractional values', () => {
     expect(() => assertRetryHorizon(cfg({ outboxMaxAttempts: 0 }))).toThrow(/OUTBOX_MAX_ATTEMPTS deve ser um inteiro positivo/);
     expect(() => assertRetryHorizon(cfg({ toolMaxAttempts: 1.5 }))).toThrow(/TOOL_MAX_ATTEMPTS/);

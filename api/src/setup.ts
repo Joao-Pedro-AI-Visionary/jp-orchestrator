@@ -1,6 +1,7 @@
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import { corsOrigins } from './auth/auth.config';
 import { httpLogging } from './observability/http-logging';
+import { openApiEnabled, setupOpenApi } from './observability/openapi';
 
 /**
  * HTTP setup shared by main.ts and the HTTP tests. Call before listen/init: the parsers
@@ -18,5 +19,6 @@ export function configureApp(app: NestExpressApplication, env: NodeJS.ProcessEnv
     allowedHeaders: ['Content-Type', 'Authorization', 'X-API-Key', 'Idempotency-Key', 'X-Request-Id', 'Last-Event-ID'],
     exposedHeaders: ['Idempotent-Replay', 'Retry-After', 'X-Request-Id'],
   });
+  if (openApiEnabled(env)) setupOpenApi(app);
   return origins;
 }
