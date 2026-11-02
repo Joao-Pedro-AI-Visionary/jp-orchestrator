@@ -79,7 +79,7 @@ describe('HTTP API with API keys', () => {
       openapi: string; info: { version: string }; paths: Record<string, Record<string, unknown>>; components: { securitySchemes: Record<string, unknown> };
     };
     expect(doc.openapi).toMatch(/^3\./);
-    expect(doc.info.version).toBe('0.6.0');
+    expect(doc.info.version).toBe('0.6.1');
     for (const path of ['/tasks', '/tasks/{id}', '/tasks/{id}/approve', '/billing/summary', '/health', '/health/ready', '/metrics']) {
       expect(doc.paths[path]).toBeDefined();
     }
