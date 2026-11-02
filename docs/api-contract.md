@@ -1,4 +1,4 @@
-# Contrato da API (v0.6.0)
+# Contrato da API (v0.7.0)
 
 Documento OpenAPI gerado dos controllers: Swagger UI em `GET /docs`, JSON em `GET /docs/openapi.json`
 (YAML em `/docs/openapi.yaml`). Ligado por padrão fora de produção; `OPENAPI=on|off` força. Este arquivo
@@ -59,15 +59,15 @@ type DependencyState = 'up' | 'down' | 'memory'; // memory: não configurado, a 
 
 | Método | Rota | Papel | Corpo / Header | Resposta |
 |---|---|---|---|---|
-| GET | /health | público | | Liveness, sempre 200: `{ ok: true, postgres: bool, redis: bool, services: { postgres: DependencyState, redis: DependencyState }, store: 'postgres' \| 'memory', mode: RunMode, version: string }` |
-| GET | /health/ready | público | | Readiness: 200 `{ ready: true, services, mode }`; **503** `{ ready: false, services, mode }` quando um Postgres ou Redis configurado não responde (2 s) |
+| GET | /health | público | | Liveness, sempre 200: `{ ok: true, postgres: bool, redis: bool, services: { postgres: DependencyState, redis: DependencyState }, store: 'postgres' \| 'memory', mode: RunMode, durable: { runtime: 'journal' \| 'restate', state: DependencyState }, version: string }` |
+| GET | /health/ready | público | | Readiness: 200 `{ ready: true, services, mode, durable }`; **503** `{ ready: false, services, mode, durable }` quando um Postgres ou Redis configurado ou o ingress do Restate (`DURABLE_RUNTIME=restate`) não responde (2 s). Com `journal`, `durable.state` repete o estado do Postgres |
 | GET | /metrics | viewer | | Prometheus (texto 0.0.4), ver "Métricas" abaixo |
 | POST | /tasks | operator, limitada | `{ title: string, description: string, budgetUsd?: number \| string = 0.05, requiresApproval?: boolean \| 'true' \| 'false' = false }`, header opcional `Idempotency-Key` (até 200 caracteres ASCII visíveis) | 201 `Task`. Repetição com a mesma chave e o mesmo corpo (normalizado: `"0,05"` = `0.05`, texto aparado): 200 + header `Idempotent-Replay: true`, mesma Task. Mesma chave com **outro corpo: 422**, nada é criado |
 | GET | /tasks | viewer | | `Task[]` (mais recentes primeiro, até 50) |
 | GET | /tasks/:id | viewer | | `{ task, subtasks: Subtask[], snapshots: Snapshot[], usage: Usage[], approval: Approval \| null, memory: {key,value,agent,at}[] }` |
 | POST | /tasks/:id/approve | approver, limitada | `{ note?: string }` (até 2000 caracteres) | `Task` (retoma o loop durável). Grava `decidedBy`. 409 se a tarefa não aguarda aprovação |
 | POST | /tasks/:id/reject | approver, limitada | `{ note?: string }` (até 2000 caracteres) | `Task` (status `rejected`). Grava `decidedBy` |
-| POST | /tasks/:id/resume | operator, limitada | | `Task` (retoma tarefa `failed` ou ativa sem dono a partir do journal). 409 se outra execução tem o lease da tarefa (inclusive uma execução cancelada por timeout que ainda está parando) ou se o status não permite retomar |
+| POST | /tasks/:id/resume | operator, limitada | | `Task` (retoma tarefa `failed` ou ativa sem dono a partir do journal). 409 se outra execução tem o lease da tarefa (inclusive uma execução cancelada por timeout que ainda está parando) ou se o status não permite retomar. Com `DURABLE_RUNTIME=restate`: só tarefa `failed` cuja execução ainda espera (dentro de `RESTATE_RESUME_WINDOW_MS`); tarefa ativa dá 409 (o Restate é o dono) |
 | GET | /billing/summary | viewer | `?limit=` (1..200, padrão 50), `?offset=` (padrão 0) | `{ totals: {tokens, costUsd, calls, cacheHits, savedUsd}, byModel: {model,tokens,costUsd,calls}[], byAgent: {agent,tokens,costUsd,calls}[], byTask: {taskId,title,status,costUsd,budgetUsd,tokens}[], page: {limit, offset, total} }`. Agregado no banco (`GROUP BY`); `totals`, `byModel` e `byAgent` cobrem todo o uso, `byTask` é uma página (mais recentes primeiro) e `page.total` é o total de tarefas |
 | GET | /billing/report.csv | viewer (chave também na URL/cookie) | | `text/csv` |
 | GET | /gateway/models | viewer | | `{ id, provider, tier: 'cheap'\|'balanced'\|'premium', inputPer1k, outputPer1k, healthy }[]` |

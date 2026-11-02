@@ -4,6 +4,7 @@ import { NestFactory } from '@nestjs/core';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import { AppModule } from './app.module';
 import { assertSecurityConfig, authConfig } from './auth/auth.config';
+import { durableConfig } from './durable/durable.config';
 import { assertRetryHorizon, retryConfig } from './common/retry-horizon';
 import { JsonLogger } from './observability/json-logger';
 import { Orchestrator } from './orchestration/orchestrator.service';
@@ -16,6 +17,8 @@ async function bootstrap() {
   assertRetryHorizon(retryConfig());
   assertRetentionConfig(retentionConfig());
   assertSecurityConfig();
+  // DURABLE_RUNTIME=restate needs RESTATE_INGRESS_URL (and identity keys in production); temporal is refused.
+  const durable = durableConfig();
   const logger = process.env.LOG_FORMAT === 'text' ? undefined : new JsonLogger();
   const app = await NestFactory.create<NestExpressApplication>(AppModule, { rawBody: true, ...(logger ? { logger } : {}) });
   const origins = configureApp(app);
@@ -29,7 +32,7 @@ async function bootstrap() {
   if (process.env.RESUME_ON_BOOT !== 'off') orchestrator.startSweep();
   const auth = authConfig();
   if (auth.open) Logger.warn('API_KEYS vazio: modo aberto, sem autenticação (só fora de produção)', 'Bootstrap');
-  Logger.log(`JP Orchestrator API em :${port} (tarefas retomadas: ${resumed}, chaves: ${auth.keys.size}, CORS: ${origins.join(' ') || 'nenhuma origem'})`, 'Bootstrap');
+  Logger.log(`JP Orchestrator API em :${port} (runtime durável: ${durable.runtime}, tarefas retomadas: ${resumed}, chaves: ${auth.keys.size}, CORS: ${origins.join(' ') || 'nenhuma origem'})`, 'Bootstrap');
 }
 
 void bootstrap();

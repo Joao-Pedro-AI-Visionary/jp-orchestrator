@@ -90,6 +90,8 @@ export interface Health {
   services?: { postgres: DependencyState; redis: DependencyState };
   /** v0.6.0+: "in-memory" (nothing configured), "persistent" or "mixed". */
   mode?: "in-memory" | "persistent" | "mixed";
+  /** v0.7.0+: active DURABLE_RUNTIME ("journal" | "restate") and its state. */
+  durable?: { runtime: string; state: DependencyState };
   version?: string;
 }
 export interface BillingSummary {

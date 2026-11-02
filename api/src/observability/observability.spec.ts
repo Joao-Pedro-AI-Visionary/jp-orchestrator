@@ -1,10 +1,13 @@
 import { AgentResult, AgentStrategy } from '../agents/agent-strategy';
 import { API_VERSION, nowIso } from '../common/util';
+import { JournalRuntime } from '../durable/journal.runtime';
+import { RestateRuntime } from '../durable/restate.runtime';
 import { HealthController } from '../health/health.controller';
 import { loops } from '../orchestration/loops';
 import { StrategyRegistry } from '../strategy/strategy-registry';
 import { Dispatcher } from '../orchestration/dispatcher';
 import { orchestratorHarness } from '../test-utils/harness';
+import { FakeRestate, restateTestConfig } from '../test-utils/restate-fake';
 import { MemoryStore } from '../persistence/memory.store';
 import { Store } from '../persistence/store.port';
 import { JsonLogger } from './json-logger';
@@ -99,12 +102,16 @@ describe('HealthController', () => {
   const redis = (ok: boolean) => ({ ping: async () => { if (!ok) throw new Error('ECONNREFUSED'); return 'PONG'; } }) as never;
 
   it('memory mode is ready and reported as memory, not as down', async () => {
-    const h = new HealthController(new MemoryStore(), null);
+    const store = new MemoryStore();
+    const h = new HealthController(store, null, new JournalRuntime(store));
     const r = res();
-    expect(await h.ready(r)).toEqual({ ready: true, services: { postgres: 'memory', redis: 'memory' }, mode: 'in-memory' });
+    expect(await h.ready(r)).toEqual({
+      ready: true, services: { postgres: 'memory', redis: 'memory' }, mode: 'in-memory', durable: { runtime: 'journal', state: 'memory' },
+    });
     expect(r.code).toBe(200);
     expect(await h.health()).toMatchObject({
-      ok: true, postgres: false, redis: false, services: { postgres: 'memory', redis: 'memory' }, store: 'memory', mode: 'in-memory', version: API_VERSION,
+      ok: true, postgres: false, redis: false, services: { postgres: 'memory', redis: 'memory' }, store: 'memory', mode: 'in-memory',
+      durable: { runtime: 'journal', state: 'memory' }, version: API_VERSION,
     });
   });
 
@@ -113,15 +120,34 @@ describe('HealthController', () => {
       [pgDown, null, { postgres: 'down', redis: 'memory' }],
       [pgUp, redis(false), { postgres: 'up', redis: 'down' }],
     ] as const) {
-      const h = new HealthController(store, rd);
+      const h = new HealthController(store, rd, new JournalRuntime(store));
       const r = res();
-      expect(await h.ready(r)).toEqual({ ready: false, services: expected, mode: rd ? 'persistent' : 'mixed' });
+      expect(await h.ready(r)).toEqual({
+        ready: false, services: expected, mode: rd ? 'persistent' : 'mixed', durable: { runtime: 'journal', state: expected.postgres },
+      });
       expect(r.code).toBe(503);
       expect((await h.health()).ok).toBe(true);
     }
     const r = res();
-    expect(await new HealthController(pgUp, redis(true)).ready(r)).toEqual({ ready: true, services: { postgres: 'up', redis: 'up' }, mode: 'persistent' });
+    expect(await new HealthController(pgUp, redis(true), new JournalRuntime(pgUp)).ready(r)).toEqual({
+      ready: true, services: { postgres: 'up', redis: 'up' }, mode: 'persistent', durable: { runtime: 'journal', state: 'up' },
+    });
     expect(r.code).toBe(200);
+  });
+
+  it('reports the active durable runtime; readiness is 503 while the Restate ingress does not answer', async () => {
+    const fake = new FakeRestate();
+    const restate = new RestateRuntime(restateTestConfig(), { ingress: fake, race: fake.race });
+    const h = new HealthController(pgUp, redis(true), restate);
+    const ok = res();
+    expect(await h.ready(ok)).toMatchObject({ ready: true, durable: { runtime: 'restate', state: 'up' } });
+    expect(ok.code).toBe(200);
+
+    jest.spyOn(fake, 'ping').mockRejectedValue(new Error('ECONNREFUSED'));
+    const down = res();
+    expect(await h.ready(down)).toMatchObject({ ready: false, services: { postgres: 'up', redis: 'up' }, durable: { runtime: 'restate', state: 'down' } });
+    expect(down.code).toBe(503);
+    expect(await h.health()).toMatchObject({ ok: true, durable: { runtime: 'restate', state: 'down' } });
   });
 });
 

@@ -4,6 +4,46 @@ Formato baseado em Keep a Changelog. Versionamento semântico.
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-11-02
+
+### Adicionado
+- **Adaptador de execução durável Restate** atrás da porta `DurableRuntime`, escolhido por `DURABLE_RUNTIME`
+  (`journal` padrão | `restate`). Decisão Restate × Temporal em `docs/durable-runtime.md`. Usa o SDK oficial
+  `@restatedev/restate-sdk` e `@restatedev/restate-sdk-clients` 1.18.2. Cada tarefa vira o workflow `TaskExecution`
+  (chave = id da tarefa):
+  - passos com `ctx.run` memoizado por nome;
+  - timeout como `ctx.sleep` durável em corrida com cada passo;
+  - aprovação e `/resume` como durable promises (handlers `approve` e `resume`);
+  - um `run` por tarefa, com submit duplicado deduplicado pelo Restate;
+  - cancelamento do Restate ou fim de tentativa propagado no `AbortSignal`;
+  - erros journaled com o tipo (orçamento, timeout) preservado no replay.
+
+  A API serve o endpoint HTTP/2 em `RESTATE_ENDPOINT_PORT` e, com `RESTATE_ADMIN_URL`, registra-se sozinha. Também
+  exige `RESTATE_IDENTITY_KEYS` (assinatura do Restate). Só em dev local dá para dispensá-la com
+  `RESTATE_ALLOW_UNSIGNED=true`, que é recusado em produção, assim como `RESTATE_REGISTER_FORCE`. Aceita também
+  `RESTATE_ENDPOINT_HOST`, `RESTATE_INGRESS_TOKEN`, `RESTATE_RESUME_WINDOW_MS` e `RESTATE_EFFECT_MAX_ATTEMPTS`.
+- O boot falha com `DurableConfigError` em configuração inválida: `DURABLE_RUNTIME` desconhecido, `temporal`
+  (avaliado, não implementado), `restate` sem `RESTATE_INGRESS_URL` ou com URL ou porta inválidas, chave de
+  identidade malformada.
+- `GET /health` e `/health/ready` trazem `durable: { runtime, state }`. Com `restate`, o readiness dá 503 enquanto o
+  ingress não responde.
+- Testes:
+  - contrato único rodando nos dois runtimes (`durable.contract.spec.ts`): replay sem reexecução, aprovação e
+    rejeição, timeout, start duplicado;
+  - `FakeRestate` (journal posicional com detecção de não determinismo, durable promises, sleeps duráveis, corrida
+    journaled, cancelamento, crash/replay);
+  - specs do adaptador: crash no meio, crash aguardando aprovação, sinal de aprovação perdido, cancelamento, janela
+    de `/resume`, `/resume` concorrente, tipo do erro no replay, sinal de aprovação perdido ou espúrio (sem laço),
+    tarefa inexistente (encerra sem retry), `/resume` sem execução no Restate, varredura de execução já fechada;
+  - teste de integração contra um Restate real, ignorado sem `RESTATE_INGRESS_URL` e `RESTATE_ADMIN_URL`.
+
+### Alterado
+- O loop do orquestrador passa as leituras e escritas que o dirigem por `ctx.effect`. No `journal` é chamada direta,
+  sem mudança de comportamento. No `restate` fica no journal, para o replay seguir o mesmo caminho.
+- `RunOutcome` ganha `submitted` (entregue ao runtime durável). Com `restate`:
+  - `/resume` só vale para tarefa `failed` cuja execução ainda espera; tarefa ativa dá 409;
+  - a varredura reenvia submits e aprovações decididas, ambos idempotentes, em vez de tomar lease.
+
 ## [0.6.0] - 2026-11-01
 
 ### Corrigido
