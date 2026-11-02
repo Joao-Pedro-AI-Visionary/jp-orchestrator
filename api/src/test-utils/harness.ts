@@ -18,6 +18,7 @@ export function gatewayHarness(provider: LlmProvider = new MockProvider(0), stor
 }
 
 import { DEFAULT_AGENTS } from '../agents/agents';
+import { AnyDurableRuntime } from '../durable/durable-runtime';
 import { JournalRuntime } from '../durable/journal.runtime';
 import { ContextStore } from '../memory/context-store.service';
 import { InMemorySharedMemory } from '../memory/shared-memory';
@@ -33,12 +34,16 @@ import { newId, nowIso } from '../common/util';
 /**
  * Full orchestration stack on in-memory adapters. Pass `store` to build another
  * replica (its own orchestrator, gateway and dispatcher) on the same database.
+ * `runtime` swaps the durable runtime (default: JournalRuntime on the same store).
  */
-export function orchestratorHarness(provider?: LlmProvider, opts: OrchestratorOptions & { store?: MemoryStore } = {}) {
+export function orchestratorHarness<R extends AnyDurableRuntime = JournalRuntime>(
+  provider?: LlmProvider,
+  opts: OrchestratorOptions & { store?: MemoryStore; runtime?: (store: MemoryStore) => R } = {},
+) {
   const g = gatewayHarness(provider, opts.store);
   const memory = new InMemorySharedMemory();
   const tools = new ToolInvoker(g.store, new StrategyRegistry('tool', BUILTIN_TOOLS));
-  const runtime = new JournalRuntime(g.store);
+  const runtime = (opts.runtime ? opts.runtime(g.store) : new JournalRuntime(g.store)) as R;
   const dispatcher = new Dispatcher(g.store, new StrategyRegistry('agent', DEFAULT_AGENTS), g.gateway, tools, memory, g.bus, loops().dispatch);
   const context = new ContextStore(g.store, g.bus);
   const orchestrator = new Orchestrator(g.store, runtime, new Planner(g.gateway), dispatcher, context, memory, g.bus, opts);

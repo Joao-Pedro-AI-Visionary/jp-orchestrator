@@ -3,8 +3,8 @@ import { AgentStrategy } from '../agents/agent-strategy';
 import { DEFAULT_AGENTS } from '../agents/agents';
 import { ApprovalService } from '../approval/approval.service';
 import { AGENT_REGISTRY, DURABLE_RUNTIME, SHARED_MEMORY, STORE, TOOL_REGISTRY } from '../common/tokens';
-import { DurableRuntime } from '../durable/durable-runtime';
-import { JournalRuntime } from '../durable/journal.runtime';
+import { AnyDurableRuntime } from '../durable/durable-runtime';
+import { createDurableRuntime } from '../durable/durable.factory';
 import { EventBus } from '../events/event-bus';
 import { GatewayModule } from '../gateway/gateway.module';
 import { GatewayService } from '../gateway/gateway.service';
@@ -29,7 +29,8 @@ import { TasksController } from './tasks.controller';
     ToolInvoker,
     { provide: TOOL_REGISTRY, useFactory: () => new StrategyRegistry('tool', BUILTIN_TOOLS) },
     { provide: AGENT_REGISTRY, useFactory: () => new StrategyRegistry<AgentStrategy>('agent', DEFAULT_AGENTS) },
-    { provide: DURABLE_RUNTIME, inject: [STORE], useFactory: (store: Store) => new JournalRuntime(store) },
+    // DURABLE_RUNTIME=journal (default) | restate; temporal or a missing RESTATE_INGRESS_URL fails the boot
+    { provide: DURABLE_RUNTIME, inject: [STORE], useFactory: (store: Store) => createDurableRuntime(store) },
     { provide: Planner, inject: [GatewayService], useFactory: (g: GatewayService) => new Planner(g) },
     {
       provide: Dispatcher,
@@ -40,10 +41,10 @@ import { TasksController } from './tasks.controller';
     {
       provide: Orchestrator,
       inject: [STORE, DURABLE_RUNTIME, Planner, Dispatcher, ContextStore, SHARED_MEMORY, EventBus],
-      useFactory: (store: Store, rt: DurableRuntime, p: Planner, d: Dispatcher, c: ContextStore, m: SharedMemory, bus: EventBus) =>
+      useFactory: (store: Store, rt: AnyDurableRuntime, p: Planner, d: Dispatcher, c: ContextStore, m: SharedMemory, bus: EventBus) =>
         new Orchestrator(store, rt, p, d, c, m, bus),
     },
   ],
-  exports: [Orchestrator],
+  exports: [Orchestrator, DURABLE_RUNTIME],
 })
 export class OrchestrationModule {}

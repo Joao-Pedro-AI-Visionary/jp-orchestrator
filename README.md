@@ -41,7 +41,7 @@ humana e webhooks recebidos com assinatura verificada.
 flowchart LR
   UI[Dashboard Next.js<br/>Motion + SSE] -->|REST + Idempotency-Key| API[TasksController]
   API --> ORC[Orchestrator<br/>loop durável]
-  ORC -->|ctx.run step| DR[(DurableRuntime<br/>JournalRuntime / Restate)]
+  ORC -->|ctx.run step| DR[(DurableRuntime<br/>DURABLE_RUNTIME=journal / restate)]
   ORC --> PL[Planner]
   ORC --> DSP[Dispatcher<br/>pool paralelo]
   DSP --> AG{{AgentStrategy<br/>researcher, coder, tester, reviewer}}
@@ -68,7 +68,7 @@ flowchart LR
 |---|---|---|
 | AI Gateway | Ponto único das chamadas de modelo: limite de tokens, cache semântico, budget guard, roteamento pelo modelo mais barato do tier, fallback em queda | `api/src/gateway/gateway.service.ts`, `model-catalog.ts`, `semantic-cache.ts` |
 | Strategy | Registro por eixo (`StrategyRegistry`), mesmo estilo do strategy-pattern-checkout: agentes, provedores de modelo e ferramentas | `api/src/strategy/strategy-registry.ts`, `agents/agents.ts`, `gateway/llm-provider.ts`, `tools/builtin-tools.ts` |
-| Durable execution | Loop escrito como passos nomeados (`ctx.run`); passo concluído nunca roda de novo; retoma após crash ou pausa. Interface pronta para Restate | `api/src/durable/durable-runtime.ts`, `journal.runtime.ts`, `restate.runtime.ts` |
+| Durable execution | Loop escrito como passos nomeados (`ctx.run`); passo concluído nunca roda de novo; retoma após crash ou pausa. `DURABLE_RUNTIME=journal` (padrão, Postgres) ou `restate` (workflow por tarefa, timer durável, aprovação por sinal; ADR em `docs/durable-runtime.md`) | `api/src/durable/durable-runtime.ts`, `journal.runtime.ts`, `restate.runtime.ts`, `durable.config.ts` |
 | Idempotency-Key + outbox | `POST /tasks` com `Idempotency-Key`; ferramentas executam uma vez por chave e gravam o evento na mesma transação do resultado | `api/src/tools/tool-invoker.service.ts`, `persistence/pg.store.ts` |
 | Aprovação humana durável | Pausa gravada no Postgres; aprovar ou rejeitar retoma o loop pelo journal, mesmo após restart | `api/src/approval/approval.service.ts`, `orchestration/orchestrator.service.ts` |
 | Eventos assinados | Webhook com `X-JP-Signature: t=..,v1=HMAC-SHA256`, tolerância de replay, retry com backoff, entrega pelo outbox | `api/src/events/signer.ts`, `outbox-relay.service.ts`, `events.module.ts` |
@@ -157,6 +157,27 @@ heartbeat (até `TASK_LEASE_MS` / 3). Deploy a partir da 0.3.x: por substituiç�
   O SQL do `PgStore` e as migrações são testados num Postgres real em WASM (PGlite) em `pg.store.spec.ts`.
 - Eventos gravados no inbox antes da v0.3.2 não têm `event_id`, então uma reentrega deles não é deduplicada.
 
+### Execução durável (`DURABLE_RUNTIME`)
+
+O mesmo loop roda sobre dois runtimes, escolhidos por `DURABLE_RUNTIME` (decisão e alternativas em
+[`docs/durable-runtime.md`](docs/durable-runtime.md)):
+
+- **`journal`** (padrão): passos em `step_journal` no Postgres; o orquestrador cuida do lease por tarefa, do
+  heartbeat, do timeout em processo e da aprovação como pausa e reexecução.
+- **`restate`**: cada tarefa é um workflow `TaskExecution` no [Restate](https://restate.dev) (SDK oficial
+  `@restatedev/restate-sdk` 1.18.2). Um `run` por tarefa, com submit duplicado deduplicado pelo Restate. O timeout é um
+  `ctx.sleep` durável em corrida com cada passo, e a aprovação e o `/resume` são durable promises. O cancelamento
+  (timeout, `restate invocations cancel`, fim da tentativa) chega como `AbortSignal` aos agentes, gateway e
+  ferramentas. A API serve o endpoint em `RESTATE_ENDPOINT_PORT` e fala com o Restate por `RESTATE_INGRESS_URL`
+  (obrigatório: sem ele o boot falha). Com `RESTATE_ADMIN_URL` ela se registra sozinha. `RESTATE_IDENTITY_KEYS`
+  também é obrigatório; só em dev local dá para dispensá-lo com `RESTATE_ALLOW_UNSIGNED=true`.
+- **`temporal`** foi avaliado e não foi implementado: o boot recusa com mensagem clara.
+
+`GET /health` e `/health/ready` informam `durable: { runtime, state }`. Com `restate`, o readiness dá 503 enquanto o
+ingress não responde. Os testes de contrato (`durable.contract.spec.ts`) rodam os mesmos cenários nos dois runtimes:
+replay sem reexecução, aprovação e rejeição, timeout e start duplicado. O teste contra um Restate real
+(`restate.integration.spec.ts`) só roda com `RESTATE_INGRESS_URL` e `RESTATE_ADMIN_URL` definidos.
+
 ### Segurança
 
 - **API key com papéis.** `API_KEYS="chave:papel[:nome],..."`, papéis `viewer` < `operator` < `approver` < `admin`
@@ -188,7 +209,7 @@ heartbeat (até `TASK_LEASE_MS` / 3). Deploy a partir da 0.3.x: por substituiç�
   chamadas, latência, cache e fallbacks do gateway, chamadas de ferramenta por resultado e requisições HTTP. Lista
   completa em `docs/api-contract.md`. No Prometheus: `authorization: { credentials: <chave viewer> }` no scrape job.
 - **`GET /health`** é liveness (sempre 200). **`GET /health/ready`** devolve 503 enquanto um Postgres ou Redis
-  configurado não responde; o healthcheck do compose usa o readiness. Em modo memória os dois aparecem como `memory`
+  configurado (ou o Restate, com `DURABLE_RUNTIME=restate`) não responde; ambos trazem `durable: { runtime, state }`; o healthcheck do compose usa o readiness. Em modo memória os dois aparecem como `memory`
   e o dashboard mostra "em memória" em cinza, não como falha; `mode` (`in-memory`, `persistent`, `mixed`) resume.
 - **OpenAPI** gerado dos controllers: Swagger UI em `/docs`, JSON em `/docs/openapi.json` (padrão ligado fora de
   produção; `OPENAPI=on|off`).
@@ -276,7 +297,8 @@ JP Orchestrator is an open source orchestrator for coding agents. It splits an e
 subtasks, runs specialized subagents in parallel (researcher, coder, tester, reviewer), merges their
 output and emits an HMAC-signed event when done. Every model call goes through an AI Gateway with
 token limits, a semantic cache, cheapest-first routing, model fallback and a per-task budget with an
-automatic cut. The agent loop is durable (journaled steps, Restate-ready interface), tool calls are
+automatic cut. The agent loop is durable (journaled steps on Postgres by default, or one Restate workflow per task with
+`DURABLE_RUNTIME=restate`), tool calls are
 idempotent with a transactional outbox, human approval is a durable pause, subagents share a per-task
 memory and the task context is versioned as hash-chained snapshots. A Next.js dashboard shows it all
 live over SSE.
@@ -305,6 +327,13 @@ This version ships a deterministic `MockProvider`; real providers plug in as ano
   its event in the same transaction. Every run holds a fenced task lease (`TASK_LEASE_MS`, heartbeat), so replicas,
   the resume sweep and `/resume` never run a task twice; `/resume` answers 409 until a cancelled run has stopped
   (at most `ABORT_GRACE_MS`). The cache is scoped per task and bypassed on correction attempts.
+- **Durable runtime (`DURABLE_RUNTIME`, see `docs/durable-runtime.md`).** `journal` (default) keeps step results in
+  Postgres under the task lease above. `restate` runs each task as a Restate workflow keyed by the task id: one run
+  per task (a duplicate submit is deduped by Restate), the task timeout is a durable `ctx.sleep` raced against every
+  step, approval and `/resume` are durable promises, and cancellation reaches the same `AbortSignal`. Boot fails
+  without `RESTATE_INGRESS_URL` or without `RESTATE_IDENTITY_KEYS` (local dev may opt out with
+  `RESTATE_ALLOW_UNSIGNED=true`, refused in production). `temporal` was evaluated and
+  is refused at boot.
 - **Retry horizon inside the key TTL (checked at boot).** Receivers and downstreams only dedupe while they remember
   the key (`IDEMPOTENCY_KEY_TTL_MS`, default 24h). The relay marks events older than `OUTBOX_MAX_AGE_MS` (default:
   key TTL minus the outbox horizon, about 23h56m) `dead` with `last_error = 'expired'` without sending them; the
@@ -330,7 +359,8 @@ This version ships a deterministic `MockProvider`; real providers plug in as ano
   The webhook receiver answers 401 and stores nothing for an unverified request.
 - `NEXT_PUBLIC_API_KEY` ships in the browser bundle: only serve the dashboard to people allowed that role.
 - JSON logs with `taskId`, `requestId` and `principal`; Prometheus `/metrics` (viewer key); `/health` is liveness,
-  `/health/ready` answers 503 while a configured Postgres or Redis is down.
+  `/health/ready` answers 503 while a configured Postgres or Redis (or Restate, with `DURABLE_RUNTIME=restate`) is down;
+  both report `durable: { runtime, state }`.
 
 ### Run it
 

@@ -1,3 +1,4 @@
+import { AddressInfo, connect, createServer } from 'node:net';
 import { INestApplication } from '@nestjs/common';
 const WRONG_FIXTURE = ['wrong', 'fixture', 'for', 'tests'].join('-');
 import type { NestExpressApplication } from '@nestjs/platform-express';
@@ -37,12 +38,16 @@ const reply = (r: Response): Reply => ({ status: r.status, headers: r.headers, j
 async function boot(env: Record<string, string>, store?: Store) {
   const saved = { ...process.env };
   Object.assign(process.env, env);
-  const builder = Test.createTestingModule({ imports: [AppModule] });
-  if (store) builder.overrideProvider(STORE).useValue(store);
-  const app = (await builder.compile()).createNestApplication<NestExpressApplication>({ rawBody: true, logger: false });
-  configureApp(app);
-  await app.listen(0, '127.0.0.1');
-  process.env = saved;
+  let app: NestExpressApplication;
+  try {
+    const builder = Test.createTestingModule({ imports: [AppModule] });
+    if (store) builder.overrideProvider(STORE).useValue(store);
+    app = (await builder.compile()).createNestApplication<NestExpressApplication>({ rawBody: true, logger: false });
+    configureApp(app);
+    await app.listen(0, '127.0.0.1');
+  } finally {
+    process.env = saved; // also when the boot fails, so the next test starts clean
+  }
   const url = (await app.getUrl()).replace('[::1]', '127.0.0.1');
   const call = (path: string, opts: { key?: keyof typeof KEYS; method?: string; body?: unknown; headers?: Record<string, string> } = {}): Promise<Reply> =>
     fetch(`${url}${path}`, {
@@ -66,6 +71,18 @@ async function until<T>(fn: () => Promise<T>, ok: (v: T) => boolean, ms = 10_000
   }
 }
 
+const freePort = () => new Promise<number>((resolve) => {
+  const srv = createServer().listen(0, '127.0.0.1', () => {
+    const { port } = srv.address() as AddressInfo;
+    srv.close(() => resolve(port));
+  });
+});
+const canConnect = (port: number) => new Promise<boolean>((resolve) => {
+  const sock = connect(port, '127.0.0.1');
+  sock.once('connect', () => { sock.destroy(); resolve(true); });
+  sock.once('error', () => resolve(false));
+});
+
 const task = (title = 'Endpoint de pedidos', extra: Record<string, unknown> = {}) =>
   ({ title, description: 'Implementar o controller', budgetUsd: 1, ...extra });
 
@@ -79,7 +96,7 @@ describe('HTTP API with API keys', () => {
       openapi: string; info: { version: string }; paths: Record<string, Record<string, unknown>>; components: { securitySchemes: Record<string, unknown> };
     };
     expect(doc.openapi).toMatch(/^3\./);
-    expect(doc.info.version).toBe('0.6.1');
+    expect(doc.info.version).toBe('0.7.0');
     for (const path of ['/tasks', '/tasks/{id}', '/tasks/{id}/approve', '/billing/summary', '/health', '/health/ready', '/metrics']) {
       expect(doc.paths[path]).toBeDefined();
     }
@@ -213,7 +230,9 @@ describe('HTTP API with API keys', () => {
     expect(await (await call('/health')).json()).toMatchObject({ ok: true, services: { postgres: 'memory', redis: 'memory' } });
     const ready = await call('/health/ready');
     expect(ready.status).toBe(200);
-    expect(await ready.json()).toEqual({ ready: true, services: { postgres: 'memory', redis: 'memory' }, mode: 'in-memory' });
+    expect(await ready.json()).toEqual({
+      ready: true, services: { postgres: 'memory', redis: 'memory' }, mode: 'in-memory', durable: { runtime: 'journal', state: 'memory' },
+    });
     expect((await call('/metrics')).status).toBe(401);
     const created = await (await call('/tasks', { key: 'operator', body: task('Para métricas') })).json();
     await until(async () => (await (await call(`/tasks/${created.id}`, { key: 'viewer' })).json()).task.status, (s) => s === 'completed');
@@ -256,8 +275,37 @@ describe('HTTP API: rate limit, readiness 503 and open mode', () => {
     apps.push(app);
     const ready = await call('/health/ready');
     expect(ready.status).toBe(503);
-    expect(await ready.json()).toEqual({ ready: false, services: { postgres: 'down', redis: 'memory' }, mode: 'mixed' });
+    expect(await ready.json()).toEqual({
+      ready: false, services: { postgres: 'down', redis: 'memory' }, mode: 'mixed', durable: { runtime: 'journal', state: 'down' },
+    });
     expect((await call('/health')).status).toBe(200);
+  });
+
+  it('DURABLE_RUNTIME: boot fails clearly when misconfigured', async () => {
+    await expect(boot({ ...BASE_ENV, DURABLE_RUNTIME: 'restate', RESTATE_INGRESS_URL: '' })).rejects.toThrow(/RESTATE_INGRESS_URL é obrigatório/);
+    await expect(boot({ ...BASE_ENV, DURABLE_RUNTIME: 'restate', RESTATE_INGRESS_URL: 'http://127.0.0.1:1' }))
+      .rejects.toThrow(/RESTATE_IDENTITY_KEYS é obrigatório/);
+    await expect(boot({ ...BASE_ENV, DURABLE_RUNTIME: 'temporal' })).rejects.toThrow(/temporal.*não está implementado/);
+    await expect(boot({ ...BASE_ENV, DURABLE_RUNTIME: 'cadence' })).rejects.toThrow(/DURABLE_RUNTIME inválido/);
+  });
+
+  it('DURABLE_RUNTIME=restate: serves the workflow endpoint and reports the engine in /health; not ready while Restate is down', async () => {
+    const port = await freePort();
+    // RESTATE_ADMIN_URL empty: never self-register against a Restate the developer may have running (it would
+    // become the latest deployment and receive new invocations after this app closes)
+    const { app, call } = await boot({
+      ...BASE_ENV, DURABLE_RUNTIME: 'restate', RESTATE_INGRESS_URL: `http://127.0.0.1:${await freePort()}`, RESTATE_ADMIN_URL: '',
+      RESTATE_ENDPOINT_PORT: String(port), RESTATE_ENDPOINT_HOST: '127.0.0.1', RESTATE_ALLOW_UNSIGNED: 'true',
+    });
+    apps.push(app);
+    expect(await canConnect(port)).toBe(true); // the http2 endpoint Restate calls
+    expect(await (await call('/health')).json()).toMatchObject({ ok: true, durable: { runtime: 'restate', state: 'down' } });
+    const ready = await call('/health/ready');
+    expect(ready.status).toBe(503);
+    expect(await ready.json()).toMatchObject({ ready: false, durable: { runtime: 'restate', state: 'down' } });
+    await app.close();
+    apps = [];
+    expect(await canConnect(port)).toBe(false); // closed with the app
   });
 
   it('open mode (no API_KEYS, not production): no key needed, decisions recorded as anonymous', async () => {

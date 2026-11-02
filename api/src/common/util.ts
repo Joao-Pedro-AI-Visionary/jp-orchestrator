@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 
 export const newId = (): string => randomUUID();
 /** Reported by GET /health and the OpenAPI document. Keep in sync with package.json. */
-export const API_VERSION = '0.6.1';
+export const API_VERSION = '0.7.0';
 export const nowIso = (): string => new Date().toISOString();
 export const sha256 = (s: string): string => createHash('sha256').update(s).digest('hex');
 

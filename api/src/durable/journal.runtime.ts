@@ -25,6 +25,8 @@ export class JournalRuntime implements DurableRuntime {
         throwIfAborted(opts.signal);
         return (await this.store.putStep(executionId, stepName, value ?? null)) as T;
       },
+      // No replay here: every run re-reads the store, so side effects run as plain calls.
+      effect: <T>(_label: string, fn: () => Promise<T>): Promise<T> => fn(),
     };
   }
 }
