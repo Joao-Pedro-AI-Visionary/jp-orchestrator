@@ -1,6 +1,6 @@
 {
   "name": "@jp-orchestrator/api",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "private": true,
   "license": "MIT",
   "scripts": {
@@ -39,5 +39,8 @@
     "testEnvironment": "node",
     "rootDir": "src",
     "testRegex": ".*\\.spec\\.ts$"
+  },
+  "overrides": {
+    "multer": "2.5.0"
   }
 }
