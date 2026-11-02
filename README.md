@@ -220,11 +220,14 @@ replay sem reexecução, aprovação e rejeição, timeout e start duplicado. O 
 
 Pré-requisitos: Docker com Compose, Node 22.
 
-A imagem da API roda com `NODE_ENV=production`, então o compose exige as chaves e o segredo num `.env`:
+A imagem da API roda com `NODE_ENV=production`, então o compose exige as chaves, o segredo e as senhas do Postgres
+e do Redis num `.env` (sem elas o `docker compose` nem sobe). As senhas entram em `DATABASE_URL`/`REDIS_URL`, por isso
+hex. Todas as portas (3000, 3001, 5432, 6379) são publicadas só em `127.0.0.1`:
 
 ```bash
 k=$(openssl rand -hex 24)
 printf 'API_KEYS=%s:admin:dashboard\nNEXT_PUBLIC_API_KEY=%s\nWEBHOOK_SECRET=%s\n' "$k" "$k" "$(openssl rand -hex 24)" > .env
+printf 'POSTGRES_PASSWORD=%s\nREDIS_PASSWORD=%s\n' "$(openssl rand -hex 24)" "$(openssl rand -hex 24)" >> .env
 
 docker compose up -d --build        # postgres, redis, api (:3001), web (:3000)
 open http://localhost:3000
@@ -245,6 +248,10 @@ npx playwright install chromium && npm run e2e   # e2e contra o stack rodando
 ```
 
 Sem `DATABASE_URL` e `REDIS_URL` a API roda inteira em memória; sem `API_KEYS` (fora de produção), sem autenticação.
+Para rodar a API fora do Docker contra o Postgres e o Redis do compose, use as senhas do `.env` nas URLs
+(`postgres://jp:<senha>@localhost:5432/orchestrator`, `redis://:<senha>@localhost:6379`).
+Um volume `pgdata` criado antes da 0.6.1 mantém a senha antiga (`jp`): o Postgres só aplica `POSTGRES_PASSWORD` num
+volume vazio. Recrie (`docker compose down -v`, apaga os dados) ou troque a senha com `ALTER USER jp PASSWORD '...'`.
 Variáveis em `.env.example`.
 Contrato da API em `docs/api-contract.md`. Screenshots do e2e em `docs/screenshots/`.
 

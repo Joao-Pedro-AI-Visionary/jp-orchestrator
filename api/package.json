@@ -41,5 +41,8 @@
     "testEnvironment": "node",
     "rootDir": "src",
     "testRegex": ".*\\.spec\\.ts$"
+  },
+  "overrides": {
+    "multer": "2.5.0"
   }
 }

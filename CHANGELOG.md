@@ -43,6 +43,21 @@ Formato baseado em Keep a Changelog. Versionamento semântico.
 - `RunOutcome` ganha `submitted` (entregue ao runtime durável). Com `restate`:
   - `/resume` só vale para tarefa `failed` cuja execução ainda espera; tarefa ativa dá 409;
   - a varredura reenvia submits e aprovações decididas, ambos idempotentes, em vez de tomar lease.
+## [0.6.1] - 2026-11-02
+
+### Segurança
+- **multer 2.5.0** (GHSA-q7qp-rjg7-q26m). Dependência transitiva do `@nestjs/platform-express` 11.2.8, que fixa 2.4.0;
+  forçada via `overrides` no `api/package.json`.
+- **docker-compose endurecido.** `POSTGRES_PASSWORD` e `REDIS_PASSWORD` são obrigatórios (`${VAR:?}`, sem padrão;
+  antes o Postgres usava `jp`/`jp` e o Redis não tinha senha). O Redis sobe com `--requirepass`; os healthchecks
+  autenticam (`redis-cli -a`, `psql` por TCP com senha); `DATABASE_URL` e `REDIS_URL` da API são montadas com essas
+  senhas. Todas as portas publicadas (3000, 3001, 5432, 6379) ficam em `127.0.0.1`. Spec `compose.spec.ts` confere isso.
+
+### Atenção ao atualizar
+- Volume `pgdata` existente mantém a senha antiga: o Postgres só lê `POSTGRES_PASSWORD` num volume vazio. Recrie o
+  volume (`docker compose down -v`, apaga os dados) ou rode `ALTER USER jp PASSWORD '...'` com a senha nova.
+- Acrescente `POSTGRES_PASSWORD` e `REDIS_PASSWORD` ao `.env` (README, "Como rodar"). Quem acessava 5432/6379/3000/3001
+  por outra máquina da rede perde o acesso (agora só loopback).
 
 ## [0.6.0] - 2026-11-01
 
