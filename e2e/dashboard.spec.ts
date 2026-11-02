@@ -2,17 +2,20 @@ import { expect, Page, test } from '@playwright/test';
 import { readFileSync } from 'node:fs';
 
 const API = process.env.API_URL ?? 'http://localhost:3001';
+/** Same key the dashboard was built with (NEXT_PUBLIC_API_KEY); empty when the API runs in open mode. */
+const API_KEY = process.env.API_KEY ?? process.env.NEXT_PUBLIC_API_KEY ?? '';
+const auth = (h: Record<string, string> = {}): Record<string, string> => (API_KEY ? { ...h, 'x-api-key': API_KEY } : h);
 const SHOTS = 'docs/screenshots';
 
 interface TaskDetail {
   task: { id: string; status: string; correctionRounds: number; spentUsd: number; budgetUsd: number };
   subtasks: { status: string }[];
   snapshots: { version: number; hash: string; parentHash: string | null }[];
-  approval: { status: string } | null;
+  approval: { status: string; decidedBy?: string | null } | null;
 }
 
 const api = async <T>(path: string, init?: RequestInit): Promise<T> => {
-  const res = await fetch(`${API}${path}`, init);
+  const res = await fetch(`${API}${path}`, { ...init, headers: auth((init?.headers ?? {}) as Record<string, string>) });
   expect(res.ok, `${path} -> HTTP ${res.status}`).toBeTruthy();
   return res.json() as Promise<T>;
 };
@@ -58,8 +61,17 @@ test('fluxo completo do dashboard: todos os botões executam ações reais', asy
   expect(favicon).toMatch(/icon/);
   expect((await page.request.get(favicon!)).status()).toBe(200);
   await expect(page.getByTestId('new-task-cta')).toHaveCSS('background-color', 'rgb(255, 200, 0)');
-  await expect(page.getByTestId('health-postgres')).toContainText(/ativo|ok|online/i);
-  await expect(page.getByTestId('health-redis')).toContainText(/ativo|ok|online/i);
+  // Postgres/Redis: 'ativo' with the full stack, a neutral 'em memória' when the API runs on MemoryStore. Never 'fora do ar'.
+  for (const id of ['health-postgres', 'health-redis']) {
+    await expect(page.getByTestId(id)).toHaveAttribute('data-state', /^(up|memory)$/);
+    await expect(page.getByTestId(id)).toContainText(/ativo|em memória/i);
+  }
+  // structure: one h1 and a skip link to main
+  await expect(page.locator('h1')).toHaveCount(1);
+  await page.keyboard.press('Tab');
+  await expect(page.getByTestId('skip-link')).toBeFocused();
+  await page.keyboard.press('Enter');
+  await expect(page.locator('main#conteudo')).toBeFocused();
   await expect(page.getByTestId('live-indicator')).toBeVisible();
   await page.screenshot({ path: `${SHOTS}/01-dashboard.png`, fullPage: true });
 
@@ -81,12 +93,17 @@ test('fluxo completo do dashboard: todos os botões executam ações reais', asy
   const t1 = `Endpoint ${w()} ${w()} ${w()}`;
   const desc1 = `Pesquisar o padrão de ${w()} ${w()}. Implementar o controller de ${w()} ${w()}. Implementar o repositório de ${w()} ${w()}. Escrever testes de ${w()} ${w()}`;
   const id1 = await submitTask(page, t1, desc1);
+  // the selected card is marked with aria-current (not aria-pressed)
+  await expect(page.locator(`[data-testid="task-card"][data-task-id="${id1}"]`)).toHaveAttribute('aria-current', 'true');
+  await expect(page.locator('[data-testid="task-card"][aria-pressed]')).toHaveCount(0);
   await expect.poll(async () => page.locator('[data-testid="subagent-lane"][data-status="running"]').count(), {
     timeout: 30_000, intervals: [100],
   }).toBeGreaterThanOrEqual(2);
   await page.screenshot({ path: `${SHOTS}/02-subagentes-paralelo.png`, fullPage: true });
   await expect(panelStatus(page)).toHaveText(/Concluída/, { timeout: 90_000 });
   await expect(page.getByTestId('completion-banner')).toBeVisible();
+  // aria-live announces only status changes of the selected task
+  await expect(page.getByTestId('live-region')).toHaveText('Tarefa selecionada: Concluída');
   const d1 = await api<TaskDetail>(`/tasks/${id1}`);
   expect(d1.task.status).toBe('completed');
   expect(d1.subtasks.every((s) => s.status === 'done')).toBe(true);
@@ -120,7 +137,11 @@ test('fluxo completo do dashboard: todos os botões executam ações reais', asy
   await page.getByTestId('approval-note').fill('ok, pode integrar');
   await page.getByTestId('approve-btn').click();
   await expect(panelStatus(page)).toHaveText(/Concluída/, { timeout: 60_000 });
-  expect((await api<TaskDetail>(`/tasks/${id3}`)).approval?.status).toBe('approved');
+  const d3 = await api<TaskDetail>(`/tasks/${id3}`);
+  expect(d3.approval?.status).toBe('approved');
+  // the approver identity is recorded and shown ('anonymous' in open mode)
+  expect(d3.approval?.decidedBy).toBeTruthy();
+  await expect(page.getByTestId('approval-decided-by')).toHaveText(d3.approval!.decidedBy!);
 
   // 4) aprovação humana: rejeitar
   const t4 = `Migrar fila de eventos ${stamp()}`;
@@ -156,12 +177,13 @@ test('fluxo completo do dashboard: todos os botões executam ações reais', asy
   for (const m of models.filter((x) => x.id !== 'mock-standard')) await page.getByTestId(`model-toggle-${m.id}`).click();
   await expect.poll(async () => (await api<{ healthy: boolean }[]>('/gateway/models')).every((m) => m.healthy)).toBe(true);
 
-  // 7) cache semântico: repetir uma tarefa idêntica gera acertos de cache
-  const before = await api<{ totals: { cacheHits: number } }>('/billing/summary');
-  await submitTask(page, t1, desc1);
+  // 7) cache com escopo por tarefa (v0.4.0): uma tarefa idêntica nova não recebe as respostas de outra tarefa
+  const id7 = await submitTask(page, t1, desc1);
   await expect(panelStatus(page)).toHaveText(/Concluída/, { timeout: 90_000 });
   const after = await api<{ totals: { cacheHits: number; savedUsd: number } }>('/billing/summary');
-  expect(after.totals.cacheHits).toBeGreaterThan(before.totals.cacheHits);
+  const usage7 = await api<{ usage: { cached: boolean }[] }>(`/tasks/${id7}`);
+  expect(usage7.usage.length).toBeGreaterThan(0);
+  expect(usage7.usage.filter((u) => u.cached)).toHaveLength(0);
   await expect(page.getByTestId('kpi-cache')).toHaveAttribute('data-value', String(after.totals.cacheHits), { timeout: 15_000 });
 
   // 8) filtros da lista
@@ -199,7 +221,7 @@ test('fluxo completo do dashboard: todos os botões executam ações reais', asy
 test('botão "Tentar de novo" recupera a lista após falha de rede', async ({ page }) => {
   // Falha só a primeira leitura de /tasks no navegador; o clique em "Tentar de novo" volta à API real.
   // O SSE fica bloqueado: assim nenhum evento recarrega a lista sozinho e só o clique pode limpar o erro.
-  await page.route(`${API}/events`, (route) => route.abort());
+  await page.route(`${API}/events**`, (route) => route.abort());
   let gets = 0;
   await page.route(`${API}/tasks`, (route) => {
     if (route.request().method() !== 'GET') return route.continue();
@@ -222,15 +244,31 @@ test('botão "Tentar de novo" recupera a lista após falha de rede', async ({ pa
   else await expect(page.getByTestId('tasks-empty')).toBeVisible();
 });
 
-test('Idempotency-Key no POST /tasks devolve a mesma tarefa', async () => {
+test('Idempotency-Key no POST /tasks devolve a mesma tarefa; outro corpo com a mesma chave é 422', async () => {
   const body = JSON.stringify({ title: `Idempotente ${stamp()}`, description: 'Implementar algo' });
-  const headers = { 'content-type': 'application/json', 'Idempotency-Key': `e2e-${stamp()}` };
+  const headers = auth({ 'content-type': 'application/json', 'Idempotency-Key': `e2e-${stamp()}` });
   const a = await fetch(`${API}/tasks`, { method: 'POST', headers, body });
   const b = await fetch(`${API}/tasks`, { method: 'POST', headers, body });
   expect(a.status).toBe(201);
   expect(b.status).toBe(200);
   expect(b.headers.get('idempotent-replay')).toBe('true');
   expect((await a.json()).id).toBe((await b.json()).id);
+  const c = await fetch(`${API}/tasks`, { method: 'POST', headers, body: JSON.stringify({ title: 'Outro corpo', description: 'Outra coisa' }) });
+  expect(c.status).toBe(422);
+});
+
+test('readiness, métricas e receptor de webhook', async () => {
+  const ready = await fetch(`${API}/health/ready`);
+  expect(ready.status).toBe(200);
+  expect((await ready.json()).ready).toBe(true);
+  const metrics = await fetch(`${API}/metrics`, { headers: auth() });
+  expect(metrics.status).toBe(200);
+  expect(await metrics.text()).toMatch(/^jpo_tasks\{status="completed"\} \d+$/m);
+  // an unsigned delivery is refused and never shows up in the inbox
+  const before = (await api<unknown[]>('/webhooks/inbox')).length;
+  const forged = await fetch(`${API}/webhooks/inbox`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{"id":"forjado"}' });
+  expect(forged.status).toBe(401);
+  expect((await api<unknown[]>('/webhooks/inbox')).length).toBe(before);
 });
 
 test('acessibilidade básica: landmarks, região aria-live e movimento reduzido', async ({ browser }) => {
@@ -245,6 +283,12 @@ test('acessibilidade básica: landmarks, região aria-live e movimento reduzido'
   await expect(page.getByTestId('task-card').or(page.getByTestId('tasks-empty')).first()).toBeVisible();
   await expect(page.getByTestId('billing-task-table').or(page.getByTestId('billing-tasks-empty')).first()).toBeVisible();
   await expect(page.getByTestId('webhooks-list').or(page.getByTestId('webhooks-empty')).first()).toBeVisible();
+  // one column: selecting a task brings its detail into view
+  const card = page.getByTestId('task-card').first();
+  if (await card.count()) {
+    await card.click();
+    await expect(page.getByTestId('task-panel')).toBeInViewport();
+  }
   await expect
     .poll(() => page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth), {
       message: 'sem rolagem horizontal no celular',

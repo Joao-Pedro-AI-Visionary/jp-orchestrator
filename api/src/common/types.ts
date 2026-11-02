@@ -75,6 +75,8 @@ export interface Approval {
   note: string | null;
   requestedAt: string;
   resolvedAt: string | null;
+  /** Identity (API key principal) that approved or rejected; null while pending or in open mode before v0.5.0. */
+  decidedBy?: string | null;
 }
 
 /**

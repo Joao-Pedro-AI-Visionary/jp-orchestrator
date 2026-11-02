@@ -90,7 +90,10 @@ const toApproval = (r: Row): Approval => ({
   note: (r.note as string) ?? null,
   requestedAt: iso(r.requested_at)!,
   resolvedAt: iso(r.resolved_at),
+  decidedBy: (r.decided_by as string) ?? null,
 });
+
+const countRows = (rows: Row[]) => Object.fromEntries(rows.map((r) => [r.status as string, num(r.n)]));
 
 /** Builds "col = $n" pairs from a camelCase patch. */
 function setClause(patch: Record<string, unknown>, rename: Record<string, string> = {}, start = 2) {
@@ -107,6 +110,8 @@ function setClause(patch: Record<string, unknown>, rename: Record<string, string
 
 /** Postgres adapter. Transactions guard the outbox and idempotency invariants. */
 export class PgStore implements Store {
+  readonly kind = 'postgres' as const;
+
   constructor(private readonly pool: Pool) {}
 
   static async connect(url: string): Promise<PgStore> {
@@ -155,18 +160,22 @@ export class PgStore implements Store {
     try { await this.pool.query('SELECT 1'); return true; } catch { return false; }
   }
 
-  async createTask(t: Task, key: string | null) {
+  async createTask(t: Task, key: string | null, fingerprint: string | null = null) {
     const ins = await this.pool.query(
       `INSERT INTO tasks (id, title, description, status, budget_usd, spent_usd, requires_approval,
-        correction_rounds, result, error, idempotency_key, created_at, updated_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+        correction_rounds, result, error, idempotency_key, idempotency_fingerprint, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
        ON CONFLICT (idempotency_key) DO NOTHING RETURNING *`,
       [t.id, t.title, t.description, t.status, t.budgetUsd, t.spentUsd, t.requiresApproval,
-        t.correctionRounds, null, null, key, t.createdAt, t.updatedAt],
+        t.correctionRounds, null, null, key, key ? fingerprint : null, t.createdAt, t.updatedAt],
     );
-    if (ins.rows[0]) return { task: toTask(ins.rows[0]), replay: false };
+    if (ins.rows[0]) return { task: toTask(ins.rows[0]), replay: false, fingerprint: key ? fingerprint : null };
     const existing = await this.pool.query('SELECT * FROM tasks WHERE idempotency_key = $1', [key]);
-    return { task: toTask(existing.rows[0]), replay: true };
+    return { task: toTask(existing.rows[0]), replay: true, fingerprint: (existing.rows[0].idempotency_fingerprint as string) ?? null };
+  }
+
+  async countTasksByStatus() {
+    return countRows((await this.pool.query('SELECT status, count(*) AS n FROM tasks GROUP BY status')).rows);
   }
 
   async getTask(id: string) {
@@ -314,18 +323,20 @@ export class PgStore implements Store {
 
   async upsertApproval(a: Approval) {
     const r = await this.pool.query(
-      `INSERT INTO approvals (task_id, status, note, requested_at, resolved_at) VALUES ($1,$2,$3,$4,$5)
-       ON CONFLICT (task_id) DO UPDATE SET status = EXCLUDED.status, note = EXCLUDED.note, resolved_at = EXCLUDED.resolved_at
+      `INSERT INTO approvals (task_id, status, note, requested_at, resolved_at, decided_by) VALUES ($1,$2,$3,$4,$5,$6)
+       ON CONFLICT (task_id) DO UPDATE SET status = EXCLUDED.status, note = EXCLUDED.note, resolved_at = EXCLUDED.resolved_at,
+         decided_by = EXCLUDED.decided_by
        RETURNING *`,
-      [a.taskId, a.status, a.note, a.requestedAt, a.resolvedAt],
+      [a.taskId, a.status, a.note, a.requestedAt, a.resolvedAt, a.decidedBy ?? null],
     );
     return toApproval(r.rows[0]);
   }
 
-  async resolveApproval(taskId: string, decision: 'approved' | 'rejected', note: string | null, resolvedAt: string) {
+  async resolveApproval(taskId: string, decision: 'approved' | 'rejected', note: string | null, resolvedAt: string, decidedBy: string | null = null) {
     const r = await this.pool.query(
-      `UPDATE approvals SET status = $2, note = $3, resolved_at = $4 WHERE task_id = $1 AND status = 'pending' RETURNING *`,
-      [taskId, decision, note, resolvedAt],
+      `UPDATE approvals SET status = $2, note = $3, resolved_at = $4, decided_by = $5
+       WHERE task_id = $1 AND status = 'pending' RETURNING *`,
+      [taskId, decision, note, resolvedAt, decidedBy],
     );
     return r.rows[0] ? toApproval(r.rows[0]) : null;
   }
@@ -406,6 +417,10 @@ export class PgStore implements Store {
   async listOutbox() {
     const r = await this.pool.query('SELECT * FROM outbox ORDER BY created_at DESC LIMIT 200');
     return r.rows.map(toOutbox);
+  }
+
+  async countOutboxByStatus() {
+    return countRows((await this.pool.query('SELECT status, count(*) AS n FROM outbox GROUP BY status')).rows);
   }
 
   recordUsage(u: Usage) {

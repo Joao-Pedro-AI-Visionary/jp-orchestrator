@@ -8,6 +8,18 @@ import { usd } from "@/lib/format";
 import { EmptyState, ErrorNote, Pill, ProgressBar, SectionTitle, Skeleton } from "./ui";
 
 type Filter = "all" | "running" | "approval" | "done";
+
+/**
+ * One column layout (below lg): the detail sits far below the list, so bring it into view
+ * after a selection instead of leaving the user where they tapped (Pareto: status first).
+ */
+function revealDetail() {
+  if (!window.matchMedia("(max-width: 1023px)").matches) return;
+  const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  requestAnimationFrame(() =>
+    document.getElementById("painel-tarefa")?.scrollIntoView({ behavior: reduce ? "auto" : "smooth", block: "start" }),
+  );
+}
 const FILTERS: { id: Filter; label: string; testId: string }[] = [
   { id: "all", label: "Todas", testId: "filter-all" },
   { id: "running", label: "Em execução", testId: "filter-running" },
@@ -70,8 +82,11 @@ export function TaskList({ d }: { d: Dashboard }) {
                       data-testid="task-card"
                       data-task-id={t.id}
                       data-status={t.status}
-                      aria-pressed={selected}
-                      onClick={() => d.select(t.id)}
+                      aria-current={selected ? "true" : undefined}
+                      onClick={() => {
+                        d.select(t.id);
+                        revealDetail();
+                      }}
                       className={`card block min-h-12 w-full p-4 text-left ${selected ? "!border-brand/70" : ""}`}
                       style={{ ["--glow" as string]: tone.glow }}
                     >

@@ -10,6 +10,7 @@ import { DurableContext, DurableRuntime } from '../durable/durable-runtime';
 import { EventBus } from '../events/event-bus';
 import { ContextStore } from '../memory/context-store.service';
 import { SharedMemory } from '../memory/shared-memory';
+import { withLogContext } from '../observability/log-context';
 import { Store } from '../persistence/store.port';
 import { outboxEvent } from '../tools/tool-invoker.service';
 import { Dispatcher } from './dispatcher';
@@ -112,7 +113,8 @@ export class Orchestrator implements OnModuleDestroy {
       if (lease) return existing.catch(() => undefined).then(() => this.start(taskId, lease));
       return existing;
     }
-    const run = this.run(taskId, lease).finally(() => this.inFlight.delete(taskId));
+    // Every log line written by this run (and the async work it starts) carries the taskId.
+    const run = withLogContext({ taskId }, () => this.run(taskId, lease)).finally(() => this.inFlight.delete(taskId));
     this.inFlight.set(taskId, run);
     run.catch((err) => this.log.error(`Tarefa ${taskId}: ${(err as Error).message}`));
     return run;
@@ -272,6 +274,7 @@ export class Orchestrator implements OnModuleDestroy {
     }
 
     // Loop 4: human approval (durable pause)
+    let decidedBy: string | null = null;
     if (task.requiresApproval) {
       const approval = await this.store.getApproval(taskId);
       if (!approval || approval.status === 'pending') {
@@ -282,9 +285,10 @@ export class Orchestrator implements OnModuleDestroy {
         await setStatus(task, 'awaiting_approval');
         return 'paused';
       }
+      decidedBy = approval.decidedBy ?? null;
       if (approval.status === 'rejected') {
         throwIfAborted(signal);
-        const done = await this.finish(taskId, 'rejected', { error: approval.note ?? 'Rejeitada na aprovação humana' }, 'task.rejected', lease);
+        const done = await this.finish(taskId, 'rejected', { error: approval.note ?? 'Rejeitada na aprovação humana' }, 'task.rejected', lease, { decidedBy });
         return done ? 'rejected' : outcomeOf((await this.mustGet(taskId)).status);
       }
     }
@@ -294,7 +298,8 @@ export class Orchestrator implements OnModuleDestroy {
     const result = await ctx.run('merge', async () => mergeResults(subtasks, results));
     await this.snapshot(ctx, 'merge', { result });
     throwIfAborted(signal);
-    const done = await this.finish(taskId, 'completed', { result, error: null }, 'task.completed', lease);
+    const done = await this.finish(taskId, 'completed', { result, error: null }, 'task.completed', lease,
+      task.requiresApproval ? { decidedBy } : {});
     return done ? 'completed' : outcomeOf((await this.mustGet(taskId)).status);
   }
 
@@ -331,10 +336,10 @@ export class Orchestrator implements OnModuleDestroy {
     return status as RunOutcome;
   }
 
-  /** Final state and its outbox event are written in one guarded transaction. Null when refused. */
-  private async finish(taskId: string, status: TaskStatus, patch: Partial<Task>, eventType: string, lease: TaskLease) {
+  /** Final state and its outbox event (plus extra payload, e.g. the approver) are written in one guarded transaction. Null when refused. */
+  private async finish(taskId: string, status: TaskStatus, patch: Partial<Task>, eventType: string, lease: TaskLease, extra: Record<string, unknown> = {}) {
     const task = await this.store.finishTask(taskId, { ...patch, status },
-      outboxEvent(eventType, { taskId, status, ...patch }), lease);
+      outboxEvent(eventType, { taskId, status, ...patch, ...extra }), lease);
     if (task) this.bus.emit('task.status', taskId, { status, error: task.error, spentUsd: task.spentUsd });
     return task;
   }

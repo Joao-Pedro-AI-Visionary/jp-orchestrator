@@ -9,6 +9,14 @@ import type {
 } from "./types";
 
 export const API_URL = (process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001").replace(/\/$/, "");
+/**
+ * API key of the dashboard (X-API-Key). NEXT_PUBLIC_* is shipped in the browser bundle:
+ * anyone who opens the dashboard can read it, so only serve the dashboard to people who
+ * may hold that role. Empty when the API runs in open mode (local dev).
+ */
+const API_KEY = process.env.NEXT_PUBLIC_API_KEY ?? "";
+/** EventSource and download links cannot send headers: the API accepts ?api_key= on those two routes only. */
+const withKey = (url: string) => (API_KEY ? `${url}?api_key=${encodeURIComponent(API_KEY)}` : url);
 
 export class ApiError extends Error {
   status: number;
@@ -31,6 +39,10 @@ function friendly(status: number, detail: string): string {
       return "Recurso não encontrado.";
     case 409:
       return detail || "Conflito: o estado atual não permite esta ação.";
+    case 413:
+      return "Conteúdo grande demais. Reduza a descrição e tente novamente.";
+    case 429:
+      return "Muitas ações seguidas. Aguarde um minuto e tente novamente.";
     case 0:
       return "Não foi possível falar com a API. Verifique se ela está no ar.";
     default:
@@ -43,7 +55,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   try {
     res = await fetch(`${API_URL}${path}`, {
       ...init,
-      headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) },
+      headers: { "Content-Type": "application/json", ...(API_KEY ? { "X-API-Key": API_KEY } : {}), ...(init?.headers ?? {}) },
     });
   } catch {
     throw new ApiError(friendly(0, ""), 0);
@@ -93,4 +105,5 @@ export const api = {
   webhooks: () => request<WebhookItem[]>("/webhooks/inbox"),
 };
 
-export const CSV_URL = `${API_URL}/billing/report.csv`;
+export const CSV_URL = withKey(`${API_URL}/billing/report.csv`);
+export const EVENTS_URL = withKey(`${API_URL}/events`);

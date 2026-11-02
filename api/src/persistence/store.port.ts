@@ -9,10 +9,18 @@ export type ToolClaim = Pick<ToolCall, 'idempotencyKey' | 'taskId' | 'subtaskId'
  * tests and local runs without Postgres. Methods that must be atomic say so.
  */
 export interface Store {
+  /** Which backend this is: readiness reports 'memory' instead of 'down' for the in-process adapter. */
+  readonly kind: 'postgres' | 'memory';
   ping(): Promise<boolean>;
 
-  /** Atomic on idempotencyKey: a repeated key returns the original task with replay=true. */
-  createTask(task: Task, idempotencyKey: string | null): Promise<{ task: Task; replay: boolean }>;
+  /**
+   * Atomic on idempotencyKey: a repeated key returns the original task with replay=true and the
+   * fingerprint stored with the key (null for keys stored before v0.5.0), so the caller can refuse
+   * a reused key carrying a different body.
+   */
+  createTask(task: Task, idempotencyKey: string | null, fingerprint?: string | null): Promise<{ task: Task; replay: boolean; fingerprint: string | null }>;
+  /** Task count per status (metrics). */
+  countTasksByStatus(): Promise<Record<string, number>>;
   getTask(id: string): Promise<Task | null>;
   listTasks(limit: number): Promise<Task[]>;
   listTasksByStatus(statuses: string[]): Promise<Task[]>;
@@ -54,8 +62,8 @@ export interface Store {
   putStep(taskId: string, key: string, value: unknown): Promise<unknown>;
 
   upsertApproval(approval: Approval): Promise<Approval>;
-  /** Atomic: pending -> decision. Null when the approval is missing or already decided. */
-  resolveApproval(taskId: string, decision: 'approved' | 'rejected', note: string | null, resolvedAt: string): Promise<Approval | null>;
+  /** Atomic: pending -> decision, recording who decided. Null when the approval is missing or already decided. */
+  resolveApproval(taskId: string, decision: 'approved' | 'rejected', note: string | null, resolvedAt: string, decidedBy?: string | null): Promise<Approval | null>;
   getApproval(taskId: string): Promise<Approval | null>;
 
   findToolCall(idempotencyKey: string): Promise<ToolCall | null>;
@@ -81,6 +89,8 @@ export interface Store {
   claimOutbox(limit: number, leaseMs: number): Promise<OutboxEvent[]>;
   updateOutbox(id: string, patch: Partial<OutboxEvent>): Promise<void>;
   listOutbox(): Promise<OutboxEvent[]>;
+  /** Outbox event count per status (metrics: dead events need an operator). */
+  countOutboxByStatus(): Promise<Record<string, number>>;
 
   /** Atomic: inserts usage and increments task spentUsd, returning the new total. */
   recordUsage(usage: Usage): Promise<number>;

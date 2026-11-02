@@ -1,6 +1,7 @@
 import { Inject, Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { HTTP_POST, STORE } from '../common/tokens';
 import { retryConfig } from '../common/retry-horizon';
+import { webhookSecret } from '../auth/auth.config';
 import { envNumber, nowIso, withTimeout } from '../common/util';
 import { Store } from '../persistence/store.port';
 import { EventBus } from './event-bus';
@@ -30,7 +31,8 @@ export class OutboxRelay implements OnModuleInit, OnModuleDestroy {
   private timer: NodeJS.Timeout | null = null;
   private running = false;
   readonly url = process.env.WEBHOOK_URL ?? 'http://localhost:3001/webhooks/inbox';
-  readonly secret = process.env.WEBHOOK_SECRET ?? 'dev-secret-change-me';
+  /** The public default is refused with NODE_ENV=production (webhookSecret throws). */
+  readonly secret = webhookSecret();
   private readonly cfg = retryConfig();
 
   constructor(

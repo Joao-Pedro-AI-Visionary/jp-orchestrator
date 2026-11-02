@@ -20,13 +20,13 @@ describe('ApprovalService', () => {
   it('two concurrent decisions: exactly one wins, the other gets 409 and emits nothing', async () => {
     const { store, service, resolved } = await setup();
     const results = await Promise.allSettled([
-      service.resolve('t1', 'approved', 'ok'),
-      service.resolve('t1', 'rejected', 'não'),
+      service.resolve('t1', 'approved', 'ok', 'ana'),
+      service.resolve('t1', 'rejected', 'não', 'bruno'),
     ]);
     expect(results.map((r) => r.status)).toEqual(['fulfilled', 'rejected']);
     expect((results[1] as PromiseRejectedResult).reason).toBeInstanceOf(ConflictException);
-    expect(await store.getApproval('t1')).toMatchObject({ status: 'approved', note: 'ok' });
-    expect(resolved).toEqual([{ status: 'approved', note: 'ok' }]);
+    expect(await store.getApproval('t1')).toMatchObject({ status: 'approved', note: 'ok', decidedBy: 'ana' });
+    expect(resolved).toEqual([{ status: 'approved', note: 'ok', decidedBy: 'ana' }]);
   });
 
   it('refuses a decision when the task is not awaiting approval', async () => {

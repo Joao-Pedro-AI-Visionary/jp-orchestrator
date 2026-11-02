@@ -11,7 +11,8 @@ const arg = (name, fallback) => {
 const api = arg('api', process.env.API_URL ?? 'http://localhost:3001');
 const out = arg('out', `reports/billing-${new Date().toISOString().slice(0, 10)}.md`);
 
-const res = await fetch(`${api}/billing/summary`);
+// API_KEY: any role (viewer is enough). Not needed when the API runs in open mode.
+const res = await fetch(`${api}/billing/summary`, { headers: process.env.API_KEY ? { 'x-api-key': process.env.API_KEY } : {} });
 if (!res.ok) {
   console.error(`Falha ao ler ${api}/billing/summary: HTTP ${res.status}`);
   process.exit(1);

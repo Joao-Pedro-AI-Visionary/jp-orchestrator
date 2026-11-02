@@ -5,6 +5,7 @@ import { nowIso, round6 } from '../common/util';
 import { Store, ToolClaim } from './store.port';
 
 const clone = <T>(v: T): T => structuredClone(v);
+const countBy = (values: string[]) => values.reduce<Record<string, number>>((acc, v) => ({ ...acc, [v]: (acc[v] ?? 0) + 1 }), {});
 const REOPENABLE: TaskStatus[] = ['failed', 'queued', 'planning', 'running', 'merging'];
 
 interface LeaseRow { owner: string | null; token: number; until: number }
@@ -12,7 +13,7 @@ interface LeaseRow { owner: string | null; token: number; until: number }
 /** In-process adapter. Single threaded event loop makes every method atomic. */
 export class MemoryStore implements Store {
   private tasks = new Map<string, Task>();
-  private idem = new Map<string, string>();
+  private idem = new Map<string, { taskId: string; fingerprint: string | null }>();
   private subtasks = new Map<string, Subtask>();
   private steps = new Map<string, unknown>();
   private approvals = new Map<string, Approval>();
@@ -23,15 +24,20 @@ export class MemoryStore implements Store {
   private snapshots: Snapshot[] = [];
   private inbox: InboxEntry[] = [];
 
+  readonly kind = 'memory' as const;
+
   async ping() { return true; }
 
-  async createTask(task: Task, key: string | null) {
-    if (key && this.idem.has(key)) {
-      return { task: clone(this.tasks.get(this.idem.get(key)!)!), replay: true };
-    }
+  async createTask(task: Task, key: string | null, fingerprint: string | null = null) {
+    const prior = key ? this.idem.get(key) : undefined;
+    if (prior) return { task: clone(this.tasks.get(prior.taskId)!), replay: true, fingerprint: prior.fingerprint };
     this.tasks.set(task.id, clone(task));
-    if (key) this.idem.set(key, task.id);
-    return { task: clone(task), replay: false };
+    if (key) this.idem.set(key, { taskId: task.id, fingerprint });
+    return { task: clone(task), replay: false, fingerprint };
+  }
+
+  async countTasksByStatus() {
+    return countBy([...this.tasks.values()].map((t) => t.status));
   }
 
   async getTask(id: string) {
@@ -137,14 +143,14 @@ export class MemoryStore implements Store {
   }
 
   async upsertApproval(a: Approval) {
-    this.approvals.set(a.taskId, clone(a));
-    return clone(a);
+    this.approvals.set(a.taskId, clone({ ...a, decidedBy: a.decidedBy ?? null }));
+    return clone(this.approvals.get(a.taskId)!);
   }
 
-  async resolveApproval(taskId: string, decision: 'approved' | 'rejected', note: string | null, resolvedAt: string) {
+  async resolveApproval(taskId: string, decision: 'approved' | 'rejected', note: string | null, resolvedAt: string, decidedBy: string | null = null) {
     const a = this.approvals.get(taskId);
     if (!a || a.status !== 'pending') return null;
-    Object.assign(a, { status: decision, note, resolvedAt });
+    Object.assign(a, { status: decision, note, resolvedAt, decidedBy });
     return clone(a);
   }
 
@@ -212,6 +218,10 @@ export class MemoryStore implements Store {
 
   async listOutbox() {
     return [...this.outbox.values()].map(clone);
+  }
+
+  async countOutboxByStatus() {
+    return countBy([...this.outbox.values()].map((e) => e.status));
   }
 
   async recordUsage(u: Usage) {

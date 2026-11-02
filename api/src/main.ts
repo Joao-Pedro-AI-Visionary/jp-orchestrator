@@ -1,16 +1,22 @@
 import 'reflect-metadata';
 import { Logger } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
+import type { NestExpressApplication } from '@nestjs/platform-express';
 import { AppModule } from './app.module';
+import { assertSecurityConfig, authConfig } from './auth/auth.config';
 import { assertRetryHorizon, retryConfig } from './common/retry-horizon';
+import { JsonLogger } from './observability/json-logger';
 import { Orchestrator } from './orchestration/orchestrator.service';
+import { configureApp } from './setup';
 
 async function bootstrap() {
-  // Fail fast: no redelivery or tool retry may outlive the idempotency key.
+  // Fail fast: no redelivery or tool retry may outlive the idempotency key, and production
+  // never runs without API keys, with the public signing secret or with CORS open to all.
   assertRetryHorizon(retryConfig());
-  const app = await NestFactory.create(AppModule, { rawBody: true });
-  const origin = process.env.CORS_ORIGIN ? process.env.CORS_ORIGIN.split(',') : true;
-  app.enableCors({ origin, exposedHeaders: ['Idempotent-Replay'] });
+  assertSecurityConfig();
+  const logger = process.env.LOG_FORMAT === 'text' ? undefined : new JsonLogger();
+  const app = await NestFactory.create<NestExpressApplication>(AppModule, { rawBody: true, ...(logger ? { logger } : {}) });
+  const origins = configureApp(app);
   app.enableShutdownHooks();
   const port = Number(process.env.PORT ?? 3001);
   await app.listen(port, '0.0.0.0');
@@ -19,7 +25,9 @@ async function bootstrap() {
   // once its lease expires. The lease keeps replicas from running the same task twice.
   const resumed = process.env.RESUME_ON_BOOT === 'off' ? 0 : await orchestrator.resumeActive();
   if (process.env.RESUME_ON_BOOT !== 'off') orchestrator.startSweep();
-  Logger.log(`JP Orchestrator API em :${port} (tarefas retomadas: ${resumed})`, 'Bootstrap');
+  const auth = authConfig();
+  if (auth.open) Logger.warn('API_KEYS vazio: modo aberto, sem autenticação (só fora de produção)', 'Bootstrap');
+  Logger.log(`JP Orchestrator API em :${port} (tarefas retomadas: ${resumed}, chaves: ${auth.keys.size}, CORS: ${origins.join(' ') || 'nenhuma origem'})`, 'Bootstrap');
 }
 
 void bootstrap();

@@ -27,7 +27,7 @@ describe('PgStore (PGlite)', () => {
   it('migrates a v0.3.1 database once, keeps legacy rows completed and lets old-style inserts stay valid', async () => {
     await ctx.db.exec(`INSERT INTO tool_calls (idempotency_key, task_id, tool, args, result) VALUES ('old', gen_random_uuid(), 't', '{}', '{"x":1}');
       INSERT INTO webhook_inbox (id, event, verified, signature, payload) VALUES (gen_random_uuid(), 'e', true, 's', '{}'), (gen_random_uuid(), 'e', true, 's', '{}');`);
-    expect(await store.migrate(MIGRATIONS)).toEqual(['0001_webhook_inbox_event_id.sql', '0002_tool_calls_started_lease.sql', '0003_task_lease_tool_failed.sql']);
+    expect(await store.migrate(MIGRATIONS)).toEqual(['0001_webhook_inbox_event_id.sql', '0002_tool_calls_started_lease.sql', '0003_task_lease_tool_failed.sql', '0004_approver_idempotency_fingerprint.sql']);
     expect(await store.migrate(MIGRATIONS)).toEqual([]);
     await ctx.db.exec(SCHEMA);
     expect(await store.findToolCall('old')).toMatchObject({ status: 'completed', attempts: 1, result: { x: 1 } });

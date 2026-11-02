@@ -4,6 +4,75 @@ Formato baseado em Keep a Changelog. Versionamento semântico.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-01
+
+### Segurança
+- **Autenticação por API key com papéis** (`API_KEYS="chave:papel[:nome],..."`): `viewer` < `operator` < `approver` <
+  `admin`, cada um incluindo os anteriores. Guard global, seguro por padrão (rota sem papel declarado exige `viewer`):
+  leitura de tarefas, billing, gateway, inbox, SSE e `/metrics` pedem `viewer`; `POST /tasks` e `/resume`, `operator`;
+  `/approve` e `/reject`, `approver`; `POST /gateway/models/:id/toggle`, `admin`. 401 sem chave válida, 403 com papel
+  abaixo do exigido. Chave em `X-API-Key` ou `Authorization: Bearer`; `GET /events` e `GET /billing/report.csv`
+  aceitam também `?api_key=` ou o cookie `jp_api_key`. As chaves ficam só como sha256.
+- **Modo aberto** (sem autenticação) só com `API_KEYS` vazio e `NODE_ENV` diferente de `production`. Em produção o boot
+  falha sem chaves, com o segredo de assinatura padrão `dev-secret-change-me` (ou com menos de 16 caracteres) e com
+  `CORS_ORIGINS=*` (`assertSecurityConfig`).
+- **Aprovador registrado:** `approvals.decided_by` (migração `0004`), `decidedBy` em `Approval`, no evento
+  `approval.resolved` e no evento assinado `task.completed` (quando a tarefa exigiu aprovação) / `task.rejected`.
+  O dashboard mostra quem decidiu.
+- **CORS** restrito a `CORS_ORIGINS` (padrão fora de produção: `http://localhost:3000`; em produção, nenhuma origem).
+  `CORS_ORIGIN` (singular) continua aceito como alias.
+- **Rate limit** em memória nas rotas que mudam estado (criar, aprovar, rejeitar, retomar, toggle de modelo):
+  `RATE_LIMIT_MAX` (60) por `RATE_LIMIT_WINDOW_MS` (60 s), por chave e IP; acima disso 429 com `Retry-After`.
+- **Validação de entrada:** corpo JSON até `BODY_LIMIT` (64kb, 413 acima); campos de tipo errado em `POST /tasks` dão
+  400 em vez de virar o valor padrão (`requiresApproval: "sim"`, `budgetUsd: true`, corpo que não é objeto);
+  nota de aprovação só texto, até 2000 caracteres; `Idempotency-Key` até 200 caracteres ASCII visíveis.
+- **Receptor de webhook não grava requisição não verificada:** assinatura ausente ou inválida recebe 401 e nada vai
+  para `webhook_inbox` (antes qualquer requisição anônima era gravada, abrindo caminho para encher o disco).
+
+### Corrigido
+- **Idempotency-Key com outro corpo devolve 422.** Antes, reusar a chave com outro corpo devolvia a tarefa antiga sem
+  erro. A API grava o sha256 do corpo normalizado com a chave (`tasks.idempotency_fingerprint`, migração `0004`);
+  `"0,05"` e `0.05` são o mesmo corpo. Chaves gravadas antes da 0.5.0 não têm fingerprint e continuam só repetindo.
+- **A UI não anula mais o Idempotency-Key:** a chave nasce com o rascunho do formulário, é reaproveitada quando o mesmo
+  rascunho é reenviado (resposta perdida, erro, clique duplo), trocada por qualquer edição e descartada só depois do
+  sucesso. Antes cada clique gerava uma chave nova e um reenvio criava tarefa duplicada. O formulário também não
+  apaga mais os campos quando a criação falha.
+- **SSE ressincroniza ao reconectar:** depois de uma queda, o `onopen` recarrega tarefas, billing, gateway, webhooks e
+  o detalhe aberto; antes a tela ficava velha até a próxima ação.
+- e2e: o passo de cache esperava acerto entre duas tarefas idênticas, o que deixou de acontecer na 0.4.0 (cache com
+  escopo por tarefa). Agora confere que a tarefa nova **não** reaproveita respostas de outra.
+
+### Observabilidade
+- **Logs estruturados em JSON** (um objeto por linha: `ts`, `level`, `context`, `msg`) com `taskId` em tudo o que a
+  execução de uma tarefa escreve (AsyncLocalStorage), `requestId` (`X-Request-Id`, aceito ou gerado e devolvido) e
+  `principal` na linha de acesso HTTP. A query string não é logada (`?api_key=` não vaza). `LOG_FORMAT=text` volta ao
+  logger padrão do Nest.
+- **`GET /metrics`** no formato Prometheus, sem dependência nova: `jpo_tasks{status}`, `jpo_outbox_events{status}`,
+  `jpo_outbox_dead`, `jpo_gateway_requests_total`, `jpo_gateway_calls_total{model,cached}`,
+  `jpo_gateway_cache_hits_total`, `jpo_gateway_fallbacks_total{model}`, `jpo_gateway_call_duration_seconds`,
+  `jpo_tool_calls_total{tool,outcome}`, `jpo_tool_call_duration_seconds`, `jpo_http_requests_total{method,route,status}`
+  e `jpo_rate_limited_total`. `gateway.call` no SSE ganhou `durationMs`.
+- **`GET /health/ready`** devolve 503 enquanto um Postgres ou Redis configurado não responde (ping com teto de 2 s);
+  `GET /health` continua liveness (sempre 200) e ganhou `services: { postgres, redis }` com `up`, `down` ou `memory`.
+  O healthcheck do compose usa o readiness.
+
+### Dashboard (UX e acessibilidade)
+- `h1` na marca e skip link "Pular para o conteúdo" para `main#conteudo`.
+- `aria-live` anuncia só mudança de status da tarefa selecionada (antes, todo evento do SSE: 8 anúncios em 5 s).
+- Card de tarefa selecionado usa `aria-current="true"` em vez de `aria-pressed`.
+- Eyebrows com 12 px (eram 11,2 px). Ícone do agente com `shrink-0` (sumia em títulos longos).
+- Postgres/Redis em modo memória aparecem como "em memória", com ponto neutro, em vez de vermelho.
+- No celular, selecionar uma tarefa rola até o detalhe (sem animação com `prefers-reduced-motion`).
+- O dashboard manda `NEXT_PUBLIC_API_KEY` (`X-API-Key`, e `?api_key=` no SSE e no CSV); mensagens para 413 e 429.
+
+### Atualização (leia antes do deploy)
+- **O compose não sobe mais sem `.env`:** a imagem da API roda com `NODE_ENV=production`, então `API_KEYS`,
+  `WEBHOOK_SECRET` e `NEXT_PUBLIC_API_KEY` são obrigatórios (comando para gerar no README, "Como rodar").
+- Clientes da API precisam mandar a chave: `scripts/*.mjs` e o e2e leem `API_KEY`. O receptor de webhook só aceita
+  eventos assinados com o mesmo `WEBHOOK_SECRET`.
+- `NEXT_PUBLIC_API_KEY` vai no bundle do navegador: sirva o dashboard só para quem pode ter aquele papel.
+- Rate limit e contadores das métricas são por réplica.
+
 ## [0.4.0] - 2026-11-01
 
 ### Corrigido

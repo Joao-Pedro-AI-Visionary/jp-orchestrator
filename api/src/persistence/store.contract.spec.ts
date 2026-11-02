@@ -85,13 +85,36 @@ describe.each(adapters)('Store contract: %s', (_name, make) => {
     const t = await seed({ status: 'awaiting_approval' });
     await store.upsertApproval({ taskId: t.id, status: 'pending', note: null, requestedAt: nowIso(), resolvedAt: null });
     const [first, second] = await Promise.all([
-      store.resolveApproval(t.id, 'approved', 'ok', nowIso()),
-      store.resolveApproval(t.id, 'rejected', 'não', nowIso()),
+      store.resolveApproval(t.id, 'approved', 'ok', nowIso(), 'ana'),
+      store.resolveApproval(t.id, 'rejected', 'não', nowIso(), 'bruno'),
     ]);
-    expect(first).toMatchObject({ status: 'approved', note: 'ok' });
+    expect(first).toMatchObject({ status: 'approved', note: 'ok', decidedBy: 'ana' });
     expect(second).toBeNull();
-    expect(await store.getApproval(t.id)).toMatchObject({ status: 'approved' });
+    expect(await store.getApproval(t.id)).toMatchObject({ status: 'approved', decidedBy: 'ana' });
     expect(await store.resolveApproval(newId(), 'approved', null, nowIso())).toBeNull();
+  });
+
+  it('returns the fingerprint stored with an idempotency key on replay (null for a key stored without one)', async () => {
+    const now = nowIso();
+    const draft = (): Task => ({ id: newId(), title: 'T', description: 'd', status: 'queued', budgetUsd: 1, spentUsd: 0,
+      requiresApproval: false, correctionRounds: 0, result: null, error: null, createdAt: now, updatedAt: now });
+    const first = await store.createTask(draft(), 'k1', 'fp-a');
+    expect(first).toMatchObject({ replay: false, fingerprint: 'fp-a' });
+    const again = await store.createTask(draft(), 'k1', 'fp-b');
+    expect(again).toMatchObject({ replay: true, fingerprint: 'fp-a', task: { id: first.task.id } });
+    await store.createTask(draft(), 'legacy');
+    expect(await store.createTask(draft(), 'legacy', 'fp-c')).toMatchObject({ replay: true, fingerprint: null });
+  });
+
+  it('counts tasks and outbox events by status for the metrics endpoint', async () => {
+    const t = await seed({ status: 'running' });
+    await seed({ status: 'running' });
+    await seed({ status: 'completed' });
+    await store.finishTask(t.id, { status: 'failed', error: 'x' }, outboxEvent('task.failed', { taskId: t.id }));
+    expect(await store.countTasksByStatus()).toEqual({ running: 1, completed: 1, failed: 1 });
+    const [ev] = await store.listOutbox();
+    await store.updateOutbox(ev.id, { status: 'dead', lastError: 'expired' });
+    expect(await store.countOutboxByStatus()).toEqual({ dead: 1 });
   });
 
   it('journals the first value of a step and hands it to a late writer', async () => {

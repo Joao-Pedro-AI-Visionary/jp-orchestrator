@@ -29,7 +29,7 @@ function Lane({ s, reduce }: { s: Subtask; reduce: boolean }) {
     >
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex items-center gap-2">
-          <Icon className="size-5 text-neutral-300" aria-hidden="true" />
+          <Icon className="size-5 shrink-0 text-neutral-300" aria-hidden="true" />
           <div>
             <p className="text-sm font-semibold text-white">{s.title}</p>
             <p className="text-xs text-neutral-400">
@@ -128,6 +128,11 @@ function Detail({ d, data }: { d: Dashboard; data: TaskDetail }) {
       {!awaiting && approval && approval.status !== "pending" && (
         <p className="text-sm text-neutral-300" data-testid="approval-resolved">
           Aprovação {approval.status === "approved" ? "concedida" : "negada"}
+          {approval.decidedBy ? (
+            <>
+              {" "}por <strong className="text-white" data-testid="approval-decided-by">{approval.decidedBy}</strong>
+            </>
+          ) : null}
           {approval.note ? `: ${approval.note}` : "."}
         </p>
       )}
@@ -270,7 +275,7 @@ function Detail({ d, data }: { d: Dashboard; data: TaskDetail }) {
 
 export function TaskPanel({ d }: { d: Dashboard }) {
   return (
-    <section aria-labelledby="panel-title" className="card p-5" data-testid="task-panel">
+    <section id="painel-tarefa" aria-labelledby="panel-title" className="card scroll-mt-4 p-5" data-testid="task-panel">
       <h2 id="panel-title" className="sr-only">
         Tarefa selecionada
       </h2>
