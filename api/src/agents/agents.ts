@@ -10,7 +10,7 @@ export class ResearcherAgent implements AgentStrategy {
 
   async run(ctx: AgentContext): Promise<AgentResult> {
     const res = await call(ctx, this, promptFor(ctx));
-    const { result } = await ctx.tools.invoke({ taskId: ctx.task.id, subtaskId: ctx.subtask.id, tool: 'search_docs', args: { query: ctx.task.title } });
+    const { result } = await ctx.tools.invoke({ taskId: ctx.task.id, subtaskId: ctx.subtask.id, tool: 'search_docs', args: { query: ctx.task.title } }, ctx.signal);
     const finding = `Referências: ${(result.hits as string[]).join(', ')}`;
     await ctx.memory.write(ctx.task.id, `research:${ctx.subtask.position}`, finding, this.key);
     return { output: `${res.text} ${finding}`, model: res.model, artifacts: [] };
@@ -35,7 +35,7 @@ export class CoderAgent implements AgentStrategy {
     await ctx.tools.invoke({
       taskId: ctx.task.id, subtaskId: ctx.subtask.id, tool: 'write_artifact',
       args: { path, content: `// ${ctx.subtask.title}\n// tentativa ${ctx.attempt}\n` },
-    });
+    }, ctx.signal);
     await ctx.memory.write(ctx.task.id, `code:${ctx.subtask.position}`, `${path}: ${note}`, this.key);
     return { output: `${res.text} ${note}.`, model: res.model, artifacts: [path] };
   }
@@ -48,7 +48,7 @@ export class TesterAgent implements AgentStrategy {
   async run(ctx: AgentContext): Promise<AgentResult> {
     const res = await call(ctx, this, promptFor(ctx));
     const suite = `test/${slug(ctx.subtask.title)}.spec.ts`;
-    const { result } = await ctx.tools.invoke({ taskId: ctx.task.id, subtaskId: ctx.subtask.id, tool: 'run_tests', args: { suite } });
+    const { result } = await ctx.tools.invoke({ taskId: ctx.task.id, subtaskId: ctx.subtask.id, tool: 'run_tests', args: { suite } }, ctx.signal);
     const summary = `${result.passed}/${result.total} testes passaram em ${suite}`;
     await ctx.memory.write(ctx.task.id, `tests:${ctx.subtask.position}`, summary, this.key);
     return { output: `${res.text} ${summary}.`, model: res.model, artifacts: [suite] };

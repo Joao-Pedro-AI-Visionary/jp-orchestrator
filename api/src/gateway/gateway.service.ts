@@ -1,7 +1,7 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { Tier } from '../common/types';
 import { PROVIDER_REGISTRY, SEMANTIC_CACHE } from '../common/tokens';
-import { envNumber, estimateTokens } from '../common/util';
+import { envNumber, estimateTokens, throwIfAborted } from '../common/util';
 import { BillingService } from '../billing/billing.service';
 import { EventBus } from '../events/event-bus';
 import { StrategyRegistry } from '../strategy/strategy-registry';
@@ -16,6 +16,12 @@ export interface GatewayRequest {
   prompt: string;
   tier: Tier;
   maxOutputTokens?: number;
+  /** Correction round of the caller (1 = first try). A retry must not get the answer that was just rejected. */
+  attempt?: number;
+  /** Reviewer feedback being addressed; any feedback bypasses the cache. */
+  feedback?: string | null;
+  /** Cancels the call: checked before each stage and forwarded to the provider. */
+  signal?: AbortSignal;
 }
 
 export interface GatewayResponse {
@@ -43,13 +49,16 @@ export class AllModelsUnavailableError extends Error {
 /**
  * AI Gateway: single entry point for every model call.
  * Order of the pipeline (cheapest checks first):
- *   1. token limit   2. semantic cache   3. budget guard
+ *   1. token limit   2. cache (exact hash, then semantic)   3. budget guard
  *   4. routing (cheapest model of the tier)   5. fallback chain on outage
  *   6. usage + cost recorded in billing
+ * The cache is scoped per task (task:agent:tier), so one task never gets another
+ * task's answer, and it is bypassed (neither read nor written) on a correction
+ * attempt (attempt > 1 or feedback present): the retry must reach the model.
  */
 @Injectable()
 export class GatewayService {
-  readonly stats = { requests: 0, cacheHits: 0, fallbacks: 0, rejectedTokenLimit: 0 };
+  readonly stats = { requests: 0, cacheHits: 0, cacheBypasses: 0, fallbacks: 0, rejectedTokenLimit: 0 };
   private readonly maxPromptTokens = envNumber('GATEWAY_MAX_PROMPT_TOKENS', 8000);
   private readonly maxOutputTokens = envNumber('GATEWAY_MAX_OUTPUT_TOKENS', 512);
 
@@ -61,7 +70,17 @@ export class GatewayService {
     private readonly bus: EventBus,
   ) {}
 
+  /** Correction attempts skip the cache entirely. */
+  static bypassesCache(req: Pick<GatewayRequest, 'attempt' | 'feedback'>): boolean {
+    return (req.attempt ?? 1) > 1 || !!req.feedback;
+  }
+
+  static cacheScope(req: Pick<GatewayRequest, 'taskId' | 'agent' | 'tier'>): string {
+    return `${req.taskId}:${req.agent}:${req.tier}`;
+  }
+
   async complete(req: GatewayRequest): Promise<GatewayResponse> {
+    throwIfAborted(req.signal);
     this.stats.requests++;
     const promptTokens = estimateTokens(req.prompt);
     if (promptTokens > this.maxPromptTokens) {
@@ -69,9 +88,11 @@ export class GatewayService {
       throw new TokenLimitError(promptTokens, this.maxPromptTokens);
     }
     const maxOut = Math.min(req.maxOutputTokens ?? this.maxOutputTokens, this.maxOutputTokens);
-    const scope = `${req.agent}:${req.tier}`;
+    const scope = GatewayService.cacheScope(req);
+    const bypass = GatewayService.bypassesCache(req);
+    if (bypass) this.stats.cacheBypasses++;
 
-    const hit = await this.cache.lookup(scope, req.prompt);
+    const hit = bypass ? null : await this.cache.lookup(scope, req.prompt);
     if (hit) {
       this.stats.cacheHits++;
       await this.billing.record({
@@ -88,15 +109,16 @@ export class GatewayService {
 
     let fallbackFrom: string | null = null;
     for (const model of chain) {
+      throwIfAborted(req.signal);
       try {
-        const out = await this.providers.resolve(model.provider).complete(model, req.prompt, maxOut);
+        const out = await this.providers.resolve(model.provider).complete(model, req.prompt, maxOut, req.signal);
         const costUsd = costOf(model, promptTokens, out.completionTokens);
         await this.billing.record({
           taskId: req.taskId, subtaskId: req.subtaskId, agent: req.agent, model: model.id,
           promptTokens, completionTokens: out.completionTokens, costUsd, savedUsd: 0, cached: false,
         });
         const res = { text: out.text, model: model.id, cached: false, promptTokens, completionTokens: out.completionTokens, costUsd, fallbackFrom };
-        await this.cache.store(scope, req.prompt, { text: out.text, model: model.id, promptTokens, completionTokens: out.completionTokens, costUsd });
+        if (!bypass) await this.cache.store(scope, req.prompt, { text: out.text, model: model.id, promptTokens, completionTokens: out.completionTokens, costUsd });
         this.emitCall(req, model.id, false, fallbackFrom, promptTokens + out.completionTokens, costUsd);
         return res;
       } catch (err) {

@@ -17,11 +17,9 @@ export class ApprovalService {
   async resolve(taskId: string, decision: 'approved' | 'rejected', note: string | null): Promise<Approval> {
     const task = await this.store.getTask(taskId);
     if (!task) throw new NotFoundException(`Tarefa ${taskId} não encontrada`);
-    const approval = await this.store.getApproval(taskId);
-    if (!approval || approval.status !== 'pending' || task.status !== 'awaiting_approval') {
-      throw new ConflictException('Tarefa não está aguardando aprovação');
-    }
-    const resolved = await this.store.upsertApproval({ ...approval, status: decision, note, resolvedAt: nowIso() });
+    // Atomic pending -> decision (UPDATE ... WHERE status = 'pending'): of two concurrent deciders only one wins.
+    const resolved = task.status === 'awaiting_approval' ? await this.store.resolveApproval(taskId, decision, note, nowIso()) : null;
+    if (!resolved) throw new ConflictException('Tarefa não está aguardando aprovação');
     this.bus.emit('approval.resolved', taskId, { status: decision, note });
     return resolved;
   }

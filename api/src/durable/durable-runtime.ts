@@ -12,7 +12,12 @@ export interface DurableContext {
   run<T>(stepName: string, fn: () => Promise<T>): Promise<T>;
 }
 
+export interface ContextOptions {
+  /** Once aborted, no further step starts and no late result is journaled. */
+  signal?: AbortSignal;
+}
+
 export interface DurableRuntime {
   readonly name: string;
-  context(executionId: string): DurableContext;
+  context(executionId: string, opts?: ContextOptions): DurableContext;
 }

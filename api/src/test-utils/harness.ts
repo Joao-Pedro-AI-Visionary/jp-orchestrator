@@ -8,8 +8,7 @@ import { MemoryStore } from '../persistence/memory.store';
 import { StrategyRegistry } from '../strategy/strategy-registry';
 
 /** Wires the gateway stack with in-memory adapters for unit tests. */
-export function gatewayHarness(provider: LlmProvider = new MockProvider(0)) {
-  const store = new MemoryStore();
+export function gatewayHarness(provider: LlmProvider = new MockProvider(0), store: MemoryStore = new MemoryStore()) {
   const bus = new EventBus();
   const catalog = new ModelCatalog(DEFAULT_MODELS);
   const billing = new BillingService(store, bus);
@@ -24,22 +23,25 @@ import { ContextStore } from '../memory/context-store.service';
 import { InMemorySharedMemory } from '../memory/shared-memory';
 import { Dispatcher } from '../orchestration/dispatcher';
 import { loops } from '../orchestration/loops';
-import { Orchestrator } from '../orchestration/orchestrator.service';
+import { Orchestrator, OrchestratorOptions } from '../orchestration/orchestrator.service';
 import { Planner } from '../orchestration/planner';
 import { BUILTIN_TOOLS } from '../tools/builtin-tools';
 import { ToolInvoker } from '../tools/tool-invoker.service';
 import { Task } from '../common/types';
 import { newId, nowIso } from '../common/util';
 
-/** Full orchestration stack on in-memory adapters. */
-export function orchestratorHarness(provider?: LlmProvider) {
-  const g = gatewayHarness(provider);
+/**
+ * Full orchestration stack on in-memory adapters. Pass `store` to build another
+ * replica (its own orchestrator, gateway and dispatcher) on the same database.
+ */
+export function orchestratorHarness(provider?: LlmProvider, opts: OrchestratorOptions & { store?: MemoryStore } = {}) {
+  const g = gatewayHarness(provider, opts.store);
   const memory = new InMemorySharedMemory();
   const tools = new ToolInvoker(g.store, new StrategyRegistry('tool', BUILTIN_TOOLS));
   const runtime = new JournalRuntime(g.store);
   const dispatcher = new Dispatcher(g.store, new StrategyRegistry('agent', DEFAULT_AGENTS), g.gateway, tools, memory, g.bus, loops().dispatch);
   const context = new ContextStore(g.store, g.bus);
-  const orchestrator = new Orchestrator(g.store, runtime, new Planner(g.gateway), dispatcher, context, memory, g.bus);
+  const orchestrator = new Orchestrator(g.store, runtime, new Planner(g.gateway), dispatcher, context, memory, g.bus, opts);
 
   const createTask = async (patch: Partial<Task> = {}) => {
     const now = nowIso();

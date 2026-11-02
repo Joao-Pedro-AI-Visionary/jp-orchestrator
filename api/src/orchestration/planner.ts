@@ -39,9 +39,9 @@ export class Planner {
     return work.sort((a, b) => a.wave - b.wave);
   }
 
-  async plan(task: Task): Promise<PlannedSubtask[]> {
+  async plan(task: Task, signal?: AbortSignal): Promise<PlannedSubtask[]> {
     await this.gateway.complete({
-      taskId: task.id, subtaskId: null, agent: 'planner', tier: 'cheap',
+      taskId: task.id, subtaskId: null, agent: 'planner', tier: 'cheap', signal,
       prompt: `AGENTE: planner\nTAREFA: ${task.title}\nDESCRICAO: ${task.description}`,
     });
     return Planner.decompose(task);

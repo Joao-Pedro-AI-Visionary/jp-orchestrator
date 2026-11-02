@@ -2,6 +2,8 @@
 export type TaskStatus =
   | 'queued' | 'planning' | 'running' | 'awaiting_approval' | 'merging'
   | 'completed' | 'failed' | 'rejected' | 'budget_exceeded';
+/** Final states. The store refuses any status write on a task already in one of them (except an explicit reopen of 'failed'). */
+export const TERMINAL_STATUSES: readonly TaskStatus[] = ['completed', 'failed', 'rejected', 'budget_exceeded'];
 export type SubtaskStatus = 'pending' | 'running' | 'done' | 'failed' | 'cancelled';
 export type AgentKind = 'researcher' | 'coder' | 'tester' | 'reviewer';
 export type Tier = 'cheap' | 'balanced' | 'premium';
@@ -22,6 +24,12 @@ export interface Task {
   createdAt: string;
   updatedAt: string;
 }
+
+/**
+ * Execution lease on a task: only the owner runs it. token is the fencing token,
+ * bumped on every acquisition, so a previous owner's writes are rejected.
+ */
+export interface TaskLease { owner: string; token: number }
 
 export interface Subtask {
   id: string;
@@ -71,8 +79,10 @@ export interface Approval {
 
 /**
  * A tool call row. 'started' is written (with a lease) before the handler runs;
- * 'completed' holds the result. attempts is the fencing token: only the holder
- * of the current attempt may complete or release the call.
+ * 'completed' holds the result; 'failed' is terminal (attempts or key TTL exhausted)
+ * and holds the reason in error. attempts is the fencing token: only the holder of
+ * the current attempt may complete, release or fail the call. It grows only when a
+ * claim takes over an expired lease (crash or timeout), not after a clean release.
  */
 export interface ToolCall {
   idempotencyKey: string;
@@ -80,8 +90,9 @@ export interface ToolCall {
   subtaskId: string | null;
   tool: string;
   args: Record<string, unknown>;
-  status: 'started' | 'completed';
+  status: 'started' | 'completed' | 'failed';
   result: Record<string, unknown> | null;
+  error: string | null;
   attempts: number;
   leaseUntil: string | null;
   createdAt: string;

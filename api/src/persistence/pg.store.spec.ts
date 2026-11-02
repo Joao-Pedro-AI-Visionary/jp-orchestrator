@@ -27,7 +27,7 @@ describe('PgStore (PGlite)', () => {
   it('migrates a v0.3.1 database once, keeps legacy rows completed and lets old-style inserts stay valid', async () => {
     await ctx.db.exec(`INSERT INTO tool_calls (idempotency_key, task_id, tool, args, result) VALUES ('old', gen_random_uuid(), 't', '{}', '{"x":1}');
       INSERT INTO webhook_inbox (id, event, verified, signature, payload) VALUES (gen_random_uuid(), 'e', true, 's', '{}'), (gen_random_uuid(), 'e', true, 's', '{}');`);
-    expect(await store.migrate(MIGRATIONS)).toEqual(['0001_webhook_inbox_event_id.sql', '0002_tool_calls_started_lease.sql']);
+    expect(await store.migrate(MIGRATIONS)).toEqual(['0001_webhook_inbox_event_id.sql', '0002_tool_calls_started_lease.sql', '0003_task_lease_tool_failed.sql']);
     expect(await store.migrate(MIGRATIONS)).toEqual([]);
     await ctx.db.exec(SCHEMA);
     expect(await store.findToolCall('old')).toMatchObject({ status: 'completed', attempts: 1, result: { x: 1 } });
@@ -38,7 +38,7 @@ describe('PgStore (PGlite)', () => {
       .rejects.toThrow(/tool_calls_status_check/);
   });
 
-  it('claims with a lease, takes over an expired or missing lease and fences a stale attempt', async () => {
+  it('claims with a lease, takes over an expired lease, re-claims a released one without a new attempt and fences a stale attempt', async () => {
     await store.migrate(MIGRATIONS);
     const claim = { idempotencyKey: 'k', taskId: newId(), subtaskId: null, tool: 'charge', args: { a: 1 }, createdAt: nowIso() };
     expect(await store.claimToolCall(claim, 60_000)).toMatchObject({ status: 'started', attempts: 1, result: null });
@@ -54,11 +54,19 @@ describe('PgStore (PGlite)', () => {
     const other = { ...claim, idempotencyKey: 'k2' };
     const createdAt = '2026-10-30T12:00:00.000Z';
     await store.claimToolCall({ ...other, createdAt }, 60_000);
-    await ctx.db.exec(`UPDATE tool_calls SET lease_until = NULL WHERE idempotency_key = 'k2'`);
+    await ctx.db.exec(`UPDATE tool_calls SET lease_until = now() - interval '1 second' WHERE idempotency_key = 'k2'`);
     // A takeover keeps the first created_at: ToolInvoker refuses re-runs past IDEMPOTENCY_KEY_TTL_MS from it.
     expect(await store.claimToolCall(other, 60_000)).toMatchObject({ attempts: 2, createdAt });
-    await store.releaseToolCall('k2', 2);
-    expect((await store.claimToolCall(other, 60_000))?.attempts).toBe(3);
+    // A clean failure releases the lease (NULL): the retry claims the same attempt.
+    await store.releaseToolCall('k2', 2, 'upstream 503');
+    expect(await store.claimToolCall(other, 60_000)).toMatchObject({ attempts: 2, error: 'upstream 503' });
+    expect(await store.claimToolCall(other, 60_000)).toBeNull();
+
+    // Terminal failure is fenced by attempt and never claimed again.
+    expect(await store.failToolCall('k2', 1, 'stale')).toMatchObject({ status: 'started' });
+    expect(await store.failToolCall('k2', 2, 'refused')).toMatchObject({ status: 'failed', error: 'refused', leaseUntil: null });
+    expect(await store.claimToolCall(other, 60_000)).toBeNull();
+    await expect(ctx.db.exec(`INSERT INTO tool_calls (idempotency_key, task_id, tool, args, status) VALUES ('f', gen_random_uuid(), 't', '{}', 'failed')`)).resolves.toBeDefined();
   });
 
   it('stores an inbox event id once (UNIQUE + ON CONFLICT DO NOTHING) and never dedupes NULL ids', async () => {

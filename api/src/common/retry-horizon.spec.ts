@@ -1,4 +1,4 @@
-import { assertRetryHorizon, outboxHorizonMs, RETRY_DEFAULTS, retryConfig, RetryConfig, toolHorizonMs } from './retry-horizon';
+import { assertRetryHorizon, defaultOutboxMaxAgeMs, outboxHorizonMs, RETRY_DEFAULTS, retryConfig, RetryConfig, toolHorizonMs } from './retry-horizon';
 
 describe('retry horizon', () => {
   const cfg = (patch: Partial<RetryConfig> = {}): RetryConfig => ({ ...RETRY_DEFAULTS, ...patch });
@@ -10,9 +10,32 @@ describe('retry horizon', () => {
     expect(outboxHorizonMs(cfg({ outboxMaxAttempts: 1 }))).toBe(35_000);
   });
 
-  it('accepts the defaults', () => {
-    expect(RETRY_DEFAULTS).toMatchObject({ idempotencyKeyTtlMs: 86_400_000, outboxMaxAgeMs: 600_000, outboxClaimLeaseMs: 30_000, toolMaxAttempts: 3 });
+  it('accepts the defaults; the max age defaults to the key TTL minus the outbox horizon, not 10 min', () => {
+    expect(RETRY_DEFAULTS).toMatchObject({ idempotencyKeyTtlMs: 86_400_000, outboxMaxAgeMs: 86_400_000 - 205_000, outboxClaimLeaseMs: 30_000, toolMaxAttempts: 3 });
+    expect(defaultOutboxMaxAgeMs(RETRY_DEFAULTS)).toBe(RETRY_DEFAULTS.outboxMaxAgeMs);
     expect(() => assertRetryHorizon(cfg())).not.toThrow();
+  });
+
+  it('derives the max age from the configured TTL and horizon unless OUTBOX_MAX_AGE_MS is set', () => {
+    process.env.IDEMPOTENCY_KEY_TTL_MS = '3600000';
+    process.env.OUTBOX_MAX_ATTEMPTS = '2';
+    try {
+      // 2 attempts: one 2 s backoff + 2 * (5 s + 30 s) = 72 s of horizon.
+      expect(retryConfig().outboxMaxAgeMs).toBe(3_600_000 - 72_000);
+      expect(() => assertRetryHorizon(retryConfig())).not.toThrow();
+      process.env.OUTBOX_MAX_AGE_MS = '60000';
+      expect(retryConfig().outboxMaxAgeMs).toBe(60_000);
+    } finally {
+      delete process.env.IDEMPOTENCY_KEY_TTL_MS;
+      delete process.env.OUTBOX_MAX_ATTEMPTS;
+      delete process.env.OUTBOX_MAX_AGE_MS;
+    }
+  });
+
+  it('counts the send after the age check: max age + timeout + claim lease must stay below the TTL', () => {
+    // 86 365 001 + 5 000 + 30 000 = TTL + 1: the last send could land after the receiver forgot the key.
+    expect(() => assertRetryHorizon(cfg({ outboxMaxAgeMs: 86_365_001 }))).toThrow(/OUTBOX_MAX_AGE_MS \(86365001ms\)/);
+    expect(() => assertRetryHorizon(cfg({ outboxMaxAgeMs: 86_364_999 }))).not.toThrow();
   });
 
   it('fails fast when a retry horizon or the max age reaches the key TTL', () => {
